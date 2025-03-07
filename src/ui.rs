@@ -14,6 +14,7 @@ use ratatui::{
 use crate::app::App;
 use crate::app::DirEntry;
 use crate::app::EntryKind;
+use crate::app::ListingStats;
 use crate::app::Popup;
 
 // const SELECTED_MODIFIER: Modifier = Modifier::REVERSED;
@@ -27,8 +28,6 @@ const DIR_TEXT_COLOR: Color = SLATE.c200;
 const NONDIR_TEXT_COLOR: Color = SLATE.c200;
 const LIST_BG_COLOR: Color = SLATE.c950;
 const GAUGE_COLOR: Color = SLATE.c200;
-
-const MIN_RENTRIES_COL_WIDTH: usize = 5;
 
 impl App {
     fn render_header(&mut self, area: Rect, buf: &mut Buffer) {
@@ -48,13 +47,8 @@ impl App {
             .title(title.left_aligned())
             .border_set(border::THICK);
 
-        let rentries_width = self
-            .dir_listing
-            .max_rentries
-            .to_string()
-            .len()
-            .max(MIN_RENTRIES_COL_WIDTH);
-        let gauge_width = 20; // TODO?
+        let rentries_width = 7;
+        let gauge_width = 20; // TODO
 
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.state.selected();
@@ -66,8 +60,7 @@ impl App {
                 entry
                     .to_listitem(
                         gauge_width,
-                        self.dir_listing.max_size,
-                        self.dir_listing.total_size,
+                        &self.dir_listing.stats,
                         rentries_width,
                         selected.map(|s| s == i).unwrap_or(false),
                     )
@@ -113,12 +106,15 @@ impl App {
     }
 }
 
+fn safe_div(a: usize, b: usize) -> f64 {
+    if b == 0 { 0.0 } else { a as f64 / b as f64 }
+}
+
 impl DirEntry {
     fn to_listitem(
         &self,
         gauge_width: usize,
-        max_size: usize,
-        total_size: usize,
+        listing_stats: &ListingStats,
         rentries_width: usize,
         selected: bool,
     ) -> ListItem<'static> {
@@ -126,8 +122,15 @@ impl DirEntry {
         // immutably unless we insist on the static lifetime of the ListItem.
         // I'm pretty sure this a borrow checker limitation, rather than a real bug.
 
-        let size = self.size.unwrap_or(0);
-        let fraction = size as f64 / max_size as f64;
+        let size_gauge_fraction = safe_div(self.size.unwrap_or(0), listing_stats.max_size);
+        let size_gauge_percent = self.size.map(|s| safe_div(s, listing_stats.total_size));
+
+        let rentries_gauge_fraction =
+            safe_div(self.rentries.unwrap_or(0), listing_stats.max_rentries);
+        let rentries_gauge_percent = self
+            .rentries
+            .map(|r| safe_div(r, listing_stats.total_rentries));
+
         let text_color = match self.kind {
             EntryKind::Dir => DIR_TEXT_COLOR,
             _ => NONDIR_TEXT_COLOR,
@@ -137,7 +140,6 @@ impl DirEntry {
 
         let style_selected = |span: Span<'static>| -> Span<'static> {
             if selected {
-                // span.add_modifier(SELECTED_MODIFIER)
                 span.style(SELECTED_STYLE)
             } else {
                 span
@@ -145,26 +147,35 @@ impl DirEntry {
         };
 
         spans.push(style_selected(Span::styled(
-            format!("{:>10} ┃", size_str(size)),
+            format!("{:>10} ┃", size_str(self.size)),
             text_color,
         )));
 
         spans.extend(gauge(
-            fraction,
-            self.size.map(|s| s as f64 / total_size as f64),
+            size_gauge_fraction,
+            size_gauge_percent,
             gauge_width,
             selected,
         ));
 
         spans.push(style_selected(Span::styled(
             format!(
-                "┃ {:rwidth$} {}",
-                self.rentries
-                    .map(|r| r.to_string())
-                    .unwrap_or("".to_string()),
-                self.name,
+                "┃  {:>rwidth$} ┃",
+                rentries_str(self.rentries),
                 rwidth = rentries_width,
             ),
+            text_color,
+        )));
+
+        spans.extend(gauge(
+            rentries_gauge_fraction,
+            rentries_gauge_percent,
+            gauge_width,
+            selected,
+        ));
+
+        spans.push(style_selected(Span::styled(
+            format!("┃ {}", self.name),
             text_color,
         )));
 
@@ -245,7 +256,11 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
     spans
 }
 
-fn size_str(size: usize) -> String {
+fn size_str(size: Option<usize>) -> String {
+    if size.is_none() {
+        return "".to_string();
+    }
+    let size = size.unwrap();
     let units = [
         "  B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB",
     ];
@@ -260,6 +275,26 @@ fn size_str(size: usize) -> String {
         format!("{:.0}   {}", size, units[i as usize])
     } else {
         format!("{:.1} {}", size, units[i as usize])
+    }
+}
+
+fn rentries_str(rentries: Option<usize>) -> String {
+    if rentries.is_none() {
+        return "".to_string();
+    }
+    let rentries = rentries.unwrap();
+    let units = ["  ", "K", "M", "G", "T", "P", "E", "Z", "Y"];
+    let base: usize = 1000;
+    let i = if rentries > 0 {
+        rentries.ilog10() / base.ilog10()
+    } else {
+        0
+    };
+    let rentries = rentries as f64 / base.pow(i) as f64;
+    if i == 0 {
+        format!("{:.0}  {}", rentries, units[i as usize])
+    } else {
+        format!("{:.1} {}", rentries, units[i as usize])
     }
 }
 

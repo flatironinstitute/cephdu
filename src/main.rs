@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 mod app;
 mod ui;
+mod ceph;
 
 use crate::{app::App, ui::ui};
 

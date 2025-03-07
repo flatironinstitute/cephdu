@@ -131,6 +131,8 @@ dependencies = [
  "clap",
  "color-eyre",
  "crossterm",
+ "lazy_static",
+ "libc",
  "ratatui",
 ]
 

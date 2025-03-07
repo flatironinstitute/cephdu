@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use ratatui::widgets::ListState;
 
+use crate::ceph::get_rentries;
+
 const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
 
 pub struct App {
@@ -18,7 +20,12 @@ pub struct DirListing {
     entries: Vec<DirEntry>,
     pub state: ListState,
     sort_mode: SortMode,
+    pub stats: ListingStats,
+}
+
+pub struct ListingStats {
     pub max_rentries: usize,
+    pub total_rentries: usize,
     pub max_size: usize,
     pub total_size: usize,
 }
@@ -142,16 +149,14 @@ impl DirListing {
             rentries: None,
         });
 
-        let (max_rentries, max_size, total_size) =
-            entries
-                .iter()
-                .fold((0, 0, 0), |(max_rentries, max_size, total_size), entry| {
-                    (
-                        max_rentries.max(entry.rentries.unwrap_or(0)),
-                        max_size.max(entry.size.unwrap_or(0)),
-                        total_size + entry.size.unwrap_or(0),
-                    )
-                });
+        let (max_rentries, total_rentries, max_size, total_size) = entries.iter().fold(
+            (0, 0, 0, 0),
+            |(max_r, total_r, max_s, total_s), entry| {
+                let r = entry.rentries.unwrap_or(0);
+                let s = entry.size.unwrap_or(0);
+                (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
+            },
+        );
         let state = ListState::default().with_selected(Some(0));
 
         Ok(DirListing {
@@ -159,9 +164,12 @@ impl DirListing {
             state,
             dotdot,
             sort_mode,
-            max_rentries,
-            max_size,
-            total_size,
+            stats: ListingStats {
+                max_rentries,
+                total_rentries,
+                max_size,
+                total_size,
+            },
         })
     }
 
@@ -219,7 +227,9 @@ impl DirListing {
 fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
     match sort_mode.field() {
         SortField::Name => entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.size.cmp(&b.size))),
-        SortField::Size => entries.sort_by(|a, b| a.size.cmp(&b.size).then(a.rentries.cmp(&b.rentries))),
+        SortField::Size => {
+            entries.sort_by(|a, b| a.size.cmp(&b.size).then(a.rentries.cmp(&b.rentries)))
+        }
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
@@ -229,13 +239,12 @@ fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
 fn ls(path: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
     let entries: Result<Vec<_>, std::io::Error> = fs::read_dir(path)?
         .map(|res| -> Result<DirEntry, std::io::Error> {
-            // Now we're returning Result from the lambda
             let entry = res?;
 
-            let file_type = entry.file_type()?;
-            let kind = if file_type.is_dir() {
+            let stat = entry.metadata()?;
+            let kind = if stat.is_dir() {
                 EntryKind::Dir
-            } else if file_type.is_symlink() {
+            } else if stat.is_symlink() {
                 EntryKind::Symlink
             } else {
                 EntryKind::File
@@ -252,16 +261,17 @@ fn ls(path: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
                 name_str
             };
 
-            let size = Some(entry.metadata()?.len() as usize);
+            let size = Some(stat.len() as usize);
+            let rentries = get_rentries(&entry.path());
 
             Ok(DirEntry {
                 name,
                 kind,
                 size,
-                rentries: Some(0),
+                rentries,
             })
         })
-        .collect(); // collect() aggregates the Results
+        .collect();
 
     entries
 }
