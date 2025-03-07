@@ -73,6 +73,12 @@ fn handle_key(key: KeyCode, app: &mut App) {
         KeyCode::Up | KeyCode::Char('k') => {
             app.dir_listing.state.select_previous();
         }
+        KeyCode::Home | KeyCode::Char('g') => {
+            app.dir_listing.state.select_first();
+        }
+        KeyCode::End | KeyCode::Char('G') => {
+            app.dir_listing.state.select_last();
+        }
         KeyCode::PageUp => {
             let state = &mut app.dir_listing.state;
             if let Some(idx) = state.selected() {
@@ -99,7 +105,7 @@ fn handle_key(key: KeyCode, app: &mut App) {
         }
         KeyCode::Char('n') => sort_or_reverse(app::SortMode::Normal(app::SortField::Name), app),
         KeyCode::Char('s') => sort_or_reverse(app::SortMode::Reversed(app::SortField::Size), app),
-        KeyCode::Char('C') => {
+        KeyCode::Char('c') | KeyCode::Char('C') => {
             sort_or_reverse(app::SortMode::Reversed(app::SortField::Rentries), app)
         }
         KeyCode::Char(' ') => {
