@@ -1,18 +1,17 @@
 use clap::Parser;
 use color_eyre::Result;
-use crossterm::event::KeyCode;
 use crossterm::event::{self, Event};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use std::path::PathBuf;
 
 mod app;
+mod navigation;
 mod fs;
 mod ui;
+mod popup;
 
 use crate::{app::App, ui::ui};
-
-static PAGE_BY: usize = 10;
 
 /// Display ceph space and file count (inode) usage in an interactive terminal
 #[derive(Parser)]
@@ -49,89 +48,8 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             if key.kind == event::KeyEventKind::Release {
                 continue;
             }
-            handle_key(key.code, app);
+            app.handle_key(key.code);
         }
     }
     Ok(())
-}
-
-fn handle_key(key: KeyCode, app: &mut App) {
-    if app.popup.is_some() {
-        match key {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
-                app.popup(None);
-            }
-            _ => {}
-        }
-        return;
-    }
-
-    match key {
-        KeyCode::Enter | KeyCode::Right => {
-            if let Some(selected) = app.dir_listing.state.selected() {
-                let entry = app.dir_listing.get(selected);
-                if entry.kind == app::EntryKind::Dir {
-                    app.cd(&PathBuf::from(&entry.name));
-                }
-            }
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.dir_listing.state.select_next();
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.dir_listing.state.select_previous();
-        }
-        KeyCode::Home | KeyCode::Char('g') => {
-            app.dir_listing.state.select_first();
-        }
-        KeyCode::End | KeyCode::Char('G') => {
-            app.dir_listing.state.select_last();
-        }
-        KeyCode::PageUp => {
-            let state = &mut app.dir_listing.state;
-            if let Some(idx) = state.selected() {
-                let new_idx = idx.saturating_sub(PAGE_BY);
-                state.select(Some(new_idx));
-            }
-        }
-        KeyCode::PageDown => {
-            let state = &mut app.dir_listing.state;
-            if let Some(idx) = state.selected() {
-                let new_idx = idx.saturating_add(PAGE_BY);
-                state.select(Some(new_idx));
-            }
-        }
-        KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
-            app.cd(&"..".into());
-        }
-        KeyCode::Esc | KeyCode::Char('q') => {
-            app.should_exit = true;
-        }
-        KeyCode::Char('n') => sort_or_reverse(app::SortMode::Normal(app::SortField::Name), app),
-        KeyCode::Char('s') => sort_or_reverse(app::SortMode::Reversed(app::SortField::Size), app),
-        KeyCode::Char('c') | KeyCode::Char('C') => {
-            sort_or_reverse(app::SortMode::Reversed(app::SortField::Rentries), app)
-        }
-        KeyCode::Char('U') => {
-            sort_or_reverse(app::SortMode::Normal(app::SortField::Owner), app)
-        }
-        KeyCode::Char(' ') => {
-            app.cd(&app.original_cwd.clone());
-        }
-        KeyCode::Char('u') => {
-            app.show_owner = !app.show_owner;
-        }
-        
-        _ => {}
-    }
-}
-
-fn sort_or_reverse(sort_mode: app::SortMode, app: &mut App) {
-    app.dir_listing.sort(
-        if sort_mode.field() == app.dir_listing.sort_mode().field() {
-            app.dir_listing.sort_mode().to_reversed()
-        } else {
-            sort_mode
-        },
-    )
 }

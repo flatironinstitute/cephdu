@@ -1,9 +1,11 @@
-use std::{fs, os::unix::fs::MetadataExt};
 use std::path::PathBuf;
+use std::{fs, os::unix::fs::MetadataExt};
 
 use ratatui::widgets::ListState;
 
-use crate::fs::{get_fs, get_rentries, FSType, id_to_name};
+use crate::fs::{FSType, get_fs, get_rentries, id_to_name};
+use crate::navigation;
+use crate::popup::Popup;
 
 const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
 
@@ -14,6 +16,7 @@ pub struct App {
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
     pub show_owner: bool,
+    pub message: Option<String>,
 }
 
 pub struct DirListing {
@@ -87,12 +90,6 @@ impl SortMode {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Popup {
-    pub title: String,
-    pub text: String,
-}
-
 impl App {
     pub fn new(cwd: Option<&PathBuf>) -> Result<App, std::io::Error> {
         let cwd: PathBuf = if let Some(cwd) = cwd {
@@ -111,13 +108,16 @@ impl App {
             original_cwd: original_cwd,
             popup: None,
             show_owner: false,
+            message: None,
         })
     }
 
     pub fn cd(&mut self, path: &PathBuf) {
         let res = self.try_cd(path);
         if let Err(e) = res {
-            self.popup(Some(format!("Error changing directory: {}", e)));
+            self.message(Some(format!("Error changing directory: {}", e)));
+        } else {
+            self.message(None);
         }
     }
 
@@ -132,11 +132,47 @@ impl App {
         Ok(())
     }
 
-    pub fn popup(&mut self, text: Option<String>) {
-        self.popup = text.map(|text| Popup {
-            title: "Error".to_string(),
-            text,
-        });
+    pub fn popup(&mut self, title: Option<&str>, text: Option<&str>) {
+        self.popup = text.map(|x| Popup::new(title.unwrap_or(""), x));
+    }
+
+    pub fn message(&mut self, text: Option<String>) {
+        self.message = text;
+    }
+
+    pub fn help(&mut self) {
+        let lhs_width = navigation::HELP
+            .iter()
+            .map(|h| h[0].len())
+            .max()
+            .unwrap_or(0);
+        let rhs_width = navigation::HELP
+            .iter()
+            .map(|h| h[1].len())
+            .max()
+            .unwrap_or(0);
+
+        let mut help_text = String::new();
+        for h in navigation::HELP {
+            help_text.push_str(&format!(
+                "{:>lhs$}: {:rhs$}\n",
+                h[0],
+                h[1],
+                lhs = lhs_width,
+                rhs = rhs_width
+            ));
+        }
+        self.popup(Some("Help"), Some(&help_text));
+    }
+
+    pub fn sort_or_reverse(&mut self, sort_mode: SortMode) {
+        self.dir_listing.sort(
+            if sort_mode.field() == self.dir_listing.sort_mode().field() {
+                self.dir_listing.sort_mode().to_reversed()
+            } else {
+                sort_mode
+            },
+        )
     }
 }
 
@@ -147,9 +183,12 @@ impl DirListing {
 
         let mut entries: Vec<DirEntry> = ls(&path)?;
         if !fs.map(|f| f.is_ceph()).unwrap_or(false) {
-            entries.iter_mut().filter(|e| e.kind == EntryKind::Dir).for_each(|e| {
-                e.size = None;
-            });
+            entries
+                .iter_mut()
+                .filter(|e| e.kind == EntryKind::Dir)
+                .for_each(|e| {
+                    e.size = None;
+                });
         }
         sort(&mut entries, sort_mode);
 
@@ -163,14 +202,14 @@ impl DirListing {
             group: None,
         });
 
-        let (max_rentries, total_rentries, max_size, total_size) = entries.iter().fold(
-            (0, 0, 0, 0),
-            |(max_r, total_r, max_s, total_s), entry| {
-                let r = entry.rentries.unwrap_or(0);
-                let s = entry.size.unwrap_or(0);
-                (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
-            },
-        );
+        let (max_rentries, total_rentries, max_size, total_size) =
+            entries
+                .iter()
+                .fold((0, 0, 0, 0), |(max_r, total_r, max_s, total_s), entry| {
+                    let r = entry.rentries.unwrap_or(0);
+                    let s = entry.size.unwrap_or(0);
+                    (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
+                });
         let state = ListState::default().with_selected(Some(0));
 
         Ok(DirListing {
@@ -252,9 +291,12 @@ fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
-        SortField::Owner => {
-            entries.sort_by(|a, b| a.user.cmp(&b.user).then(a.group.cmp(&b.group)).then(a.size.cmp(&b.size)))
-        }
+        SortField::Owner => entries.sort_by(|a, b| {
+            a.user
+                .cmp(&b.user)
+                .then(a.group.cmp(&b.group))
+                .then(a.size.cmp(&b.size))
+        }),
     }
 }
 
@@ -283,10 +325,7 @@ fn ls(path: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
                 name_str
             };
 
-            let name_or_id = |id: u32| {
-                id_to_name(id)
-                    .unwrap_or_else(|| format!("{}", id))
-            };
+            let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
 
             let size = Some(stat.len() as usize);
             let rentries = get_rentries(&entry.path());

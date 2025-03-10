@@ -2,12 +2,15 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize, palette::tailwind::SLATE},
+    style::{
+        Color, Modifier, Style, Stylize,
+        palette::tailwind::{RED, SLATE},
+    },
     symbols::border,
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, StatefulWidget, Widget,
-        Wrap,
+        Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Scrollbar,
+        ScrollbarOrientation, StatefulWidget, Widget, Wrap,
     },
 };
 
@@ -15,7 +18,7 @@ use crate::app::App;
 use crate::app::DirEntry;
 use crate::app::EntryKind;
 use crate::app::ListingStats;
-use crate::app::Popup;
+use crate::popup::Popup;
 
 const SELECTED_BG_COLOR: Color = SLATE.c700;
 const SELECTED_STYLE: Style = Style::new()
@@ -28,10 +31,17 @@ const NONDIR_TEXT_COLOR: Color = SLATE.c200;
 const LIST_BG_COLOR: Color = SLATE.c950;
 const GAUGE_COLOR: Color = SLATE.c200;
 
+const ERROR_FG_COLOR: Color = RED.c50;
+const ERROR_BG_COLOR: Color = RED.c900;
+
+const POPUP_FG_COLOR: Color = SLATE.c50;
+const POPUP_BG_COLOR: Color = SLATE.c950;
+pub const POPUP_TEXT_HEIGHT: usize = 10;
+
 const GAUGE_WIDTH: usize = 20;
 
 impl App {
-    fn render_header(&mut self, area: Rect, buf: &mut Buffer) {
+    fn render_header(&self, area: Rect, buf: &mut Buffer) {
         Line::from(format!("cephdu v{} ", env!("CARGO_PKG_VERSION")).bold())
             .centered()
             .bg(TEXT_FG_COLOR)
@@ -104,27 +114,41 @@ impl App {
         StatefulWidget::render(list, area, buf, &mut self.dir_listing.state);
     }
 
-    fn render_popup(&mut self, popup: Popup, area: Rect, buf: &mut Buffer) {
-        let text = Span::styled(popup.text, Style::default().fg(Color::White));
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(
-                format!(" {} ", popup.title),
-                Style::default().fg(Color::White),
-            ))
-            .border_style(Style::default().fg(Color::White))
-            .border_set(border::THICK)
-            .bg(LIST_BG_COLOR);
-
-        let paragraph = Paragraph::new(Text::from(text))
-            .block(block)
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false });
-
-        Clear.render(area, buf);
-        paragraph.render(area, buf);
+    fn render_message(&self, message: &str, area: Rect, buf: &mut Buffer) {
+        Line::from(message)
+            .centered()
+            .bg(ERROR_BG_COLOR)
+            .fg(ERROR_FG_COLOR)
+            .render(area, buf);
     }
+}
+
+fn render_popup(popup: &mut Popup, area: Rect, buf: &mut Buffer) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            format!(" {} ", popup.title),
+            Style::default().fg(POPUP_FG_COLOR),
+        ))
+        .border_style(Style::default().fg(POPUP_FG_COLOR))
+        .border_set(border::THICK)
+        .bg(LIST_BG_COLOR);
+
+    let paragraph = Paragraph::new(Text::from(popup.text.as_str()))
+        .block(block)
+        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Center)
+        .bg(POPUP_BG_COLOR)
+        .fg(POPUP_FG_COLOR)
+        .scroll((popup.scroll() as u16, 0));
+
+    Clear.render(area, buf);
+    paragraph.render(area, buf);
+    Scrollbar::new(ScrollbarOrientation::VerticalRight).render(
+        area,
+        buf,
+        &mut popup.scrollbar_state,
+    );
 }
 
 fn safe_div(a: usize, b: usize) -> f64 {
@@ -337,26 +361,15 @@ fn rentries_str(rentries: Option<usize>) -> String {
     }
 }
 
-fn column_width<I>(iter: I) -> usize
-where
-    I: IntoIterator,
-    I::Item: AsRef<str>,
-{
-    iter.into_iter()
-        .map(|s| s.as_ref().len())
-        .max()
-        .unwrap_or(0)
-}
-
 /// helper function to create a centered rect using up certain percentage of the available rect `r`
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+fn centered_rect(xsize: u16, ysize: u16, r: Rect) -> Rect {
     // Cut the given rectangle into three vertical pieces
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Fill(1),
+            Constraint::Length(ysize),
+            Constraint::Fill(1),
         ])
         .split(r);
 
@@ -364,15 +377,16 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Fill(1),
+            Constraint::Length(xsize),
+            Constraint::Fill(1),
         ])
         .split(popup_layout[1])[1] // Return the middle chunk
 }
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
-    let [header_area, main_area, _footer_area] = Layout::vertical([
+    let [header_area, message_area, main_area, _footer_area] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -383,8 +397,16 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     app.render_list(main_area, frame.buffer_mut());
     // app.render_footer(footer_area, frame.buffer_mut());
 
-    if let Some(popup) = &app.popup {
-        let popup_area = centered_rect(50, 25, frame.area());
-        app.render_popup(popup.clone(), popup_area, frame.buffer_mut());
+    if let Some(message) = &app.message {
+        app.render_message(message, message_area, frame.buffer_mut());
+    }
+
+    if let Some(popup) = &mut app.popup {
+        let popup_area = centered_rect(
+            popup.text_width as u16 + 4,
+            POPUP_TEXT_HEIGHT as u16 + 2,
+            frame.area(),
+        );
+        render_popup(popup, popup_area, frame.buffer_mut());
     }
 }

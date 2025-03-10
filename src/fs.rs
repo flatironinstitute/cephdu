@@ -2,7 +2,6 @@ use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::result;
 
 use lazy_static::lazy_static;
 use libc;
