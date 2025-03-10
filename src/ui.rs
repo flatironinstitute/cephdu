@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{
         Color, Modifier, Style, Stylize,
-        palette::tailwind::{RED, SLATE},
+        palette::tailwind::{RED, SLATE, YELLOW},
     },
     symbols::border,
     text::{Line, Span, Text},
@@ -18,6 +18,8 @@ use crate::app::App;
 use crate::app::DirEntry;
 use crate::app::EntryKind;
 use crate::app::ListingStats;
+use crate::app::Message;
+use crate::app::MessageKind;
 use crate::popup::Popup;
 
 const SELECTED_BG_COLOR: Color = SLATE.c700;
@@ -31,8 +33,9 @@ const NONDIR_TEXT_COLOR: Color = SLATE.c200;
 const LIST_BG_COLOR: Color = SLATE.c950;
 const GAUGE_COLOR: Color = SLATE.c200;
 
-const ERROR_FG_COLOR: Color = RED.c50;
-const ERROR_BG_COLOR: Color = RED.c900;
+const ERROR_MESSAGE_STYLE: Style = Style::new().fg(RED.c50).bg(RED.c900);
+const WARNING_MESSAGE_STYLE: Style = Style::new().fg(YELLOW.c50).bg(YELLOW.c900);
+const INFO_MESSAGE_STYLE: Style = Style::new().fg(SLATE.c50).bg(SLATE.c950);
 
 const POPUP_FG_COLOR: Color = SLATE.c50;
 const POPUP_BG_COLOR: Color = SLATE.c950;
@@ -114,11 +117,18 @@ impl App {
         StatefulWidget::render(list, area, buf, &mut self.dir_listing.state);
     }
 
-    fn render_message(&self, message: &str, area: Rect, buf: &mut Buffer) {
-        Line::from(message)
+    fn render_message(&self, message: &Option<Message>, area: Rect, buf: &mut Buffer) {
+        let message = message.clone().unwrap_or(Message {
+            text: " ".to_string(),
+            kind: MessageKind::Info,
+        });
+        Line::from(message.text.as_str())
             .centered()
-            .bg(ERROR_BG_COLOR)
-            .fg(ERROR_FG_COLOR)
+            .style(match message.kind {
+                MessageKind::Error => ERROR_MESSAGE_STYLE,
+                MessageKind::Warning => WARNING_MESSAGE_STYLE,
+                MessageKind::Info => INFO_MESSAGE_STYLE,
+            })
             .render(area, buf);
     }
 }
@@ -397,9 +407,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     app.render_list(main_area, frame.buffer_mut());
     // app.render_footer(footer_area, frame.buffer_mut());
 
-    if let Some(message) = &app.message {
-        app.render_message(message, message_area, frame.buffer_mut());
-    }
+    app.render_message(&app.message, message_area, frame.buffer_mut());
 
     if let Some(popup) = &mut app.popup {
         let popup_area = centered_rect(

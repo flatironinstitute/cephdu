@@ -14,8 +14,8 @@ pub const HELP: &[[&str; 2]] = &[
         ["Up, k", "Move cursor up"],
         ["Page Down", "Jump cursor down"],
         ["Page Up", "Jump cursor up"],
-        ["Enter, Right", "Open directory"],
-        ["Backspace, Left, h", "Go to parent directory"],
+        ["Enter", "Open directory"],
+        ["Backspace, h", "Go to parent directory"],
         ["n", "Sort by name"],
         ["s", "Sort by size"],
         ["c, C", "Sort by file count"],
@@ -69,7 +69,7 @@ impl App {
         }
 
         match key {
-            KeyCode::Enter | KeyCode::Right => {
+            KeyCode::Enter => {
                 if let Some(selected) = self.dir_listing.state.selected() {
                     let entry = self.dir_listing.get(selected);
                     if entry.kind == app::EntryKind::Dir {
@@ -103,7 +103,7 @@ impl App {
                     state.select(Some(new_idx));
                 }
             }
-            KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => {
+            KeyCode::Backspace | KeyCode::Char('h') => {
                 self.cd(&"..".into());
             }
             KeyCode::Esc | KeyCode::Char('q') => {

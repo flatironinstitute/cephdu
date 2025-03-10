@@ -16,7 +16,7 @@ pub struct App {
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
     pub show_owner: bool,
-    pub message: Option<String>,
+    pub message: Option<Message>,
 }
 
 pub struct DirListing {
@@ -90,6 +90,19 @@ impl SortMode {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct Message {
+    pub text: String,
+    pub kind: MessageKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum MessageKind {
+    Error,
+    Warning,
+    Info,
+}
+
 impl App {
     pub fn new(cwd: Option<&PathBuf>) -> Result<App, std::io::Error> {
         let cwd: PathBuf = if let Some(cwd) = cwd {
@@ -115,9 +128,19 @@ impl App {
     pub fn cd(&mut self, path: &PathBuf) {
         let res = self.try_cd(path);
         if let Err(e) = res {
-            self.message(Some(format!("Error changing directory: {}", e)));
+            self.message(Some(Message {
+                text: format!("Error changing directory: {}", e),
+                kind: MessageKind::Error,
+            }));
         } else {
-            self.message(None);
+            if !self.dir_listing.is_ceph() {
+                self.message(Some(Message {
+                    text: "Warning: not a Ceph directory".to_string(),
+                    kind: MessageKind::Warning,
+                }));
+            } else {
+                self.message(None);
+            }
         }
     }
 
@@ -136,8 +159,8 @@ impl App {
         self.popup = text.map(|x| Popup::new(title.unwrap_or(""), x));
     }
 
-    pub fn message(&mut self, text: Option<String>) {
-        self.message = text;
+    pub fn message(&mut self, message: Option<Message>) {
+        self.message = message;
     }
 
     pub fn help(&mut self) {
