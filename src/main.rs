@@ -7,8 +7,8 @@ use ratatui::backend::Backend;
 use std::path::PathBuf;
 
 mod app;
-mod ui;
 mod ceph;
+mod ui;
 
 use crate::{app::App, ui::ui};
 
@@ -56,11 +56,19 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 }
 
 fn handle_key(key: KeyCode, app: &mut App) {
+    if app.popup.is_some() {
+        match key {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Enter => {
+                app.popup(None);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key {
         KeyCode::Enter | KeyCode::Right => {
-            if app.popup.is_some() {
-                app.popup(None);
-            } else if let Some(selected) = app.dir_listing.state.selected() {
+            if let Some(selected) = app.dir_listing.state.selected() {
                 let entry = app.dir_listing.get(selected);
                 if entry.kind == app::EntryKind::Dir {
                     app.cd(&PathBuf::from(&entry.name));
@@ -97,11 +105,7 @@ fn handle_key(key: KeyCode, app: &mut App) {
             app.cd(&"..".into());
         }
         KeyCode::Esc | KeyCode::Char('q') => {
-            if app.popup.is_some() {
-                app.popup(None);
-            } else {
-                app.should_exit = true;
-            }
+            app.should_exit = true;
         }
         KeyCode::Char('n') => sort_or_reverse(app::SortMode::Normal(app::SortField::Name), app),
         KeyCode::Char('s') => sort_or_reverse(app::SortMode::Reversed(app::SortField::Size), app),

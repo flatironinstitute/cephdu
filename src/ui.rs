@@ -17,7 +17,6 @@ use crate::app::EntryKind;
 use crate::app::ListingStats;
 use crate::app::Popup;
 
-// const SELECTED_MODIFIER: Modifier = Modifier::REVERSED;
 const SELECTED_BG_COLOR: Color = SLATE.c700;
 const SELECTED_STYLE: Style = Style::new()
     .bg(SELECTED_BG_COLOR)
@@ -28,6 +27,8 @@ const DIR_TEXT_COLOR: Color = SLATE.c200;
 const NONDIR_TEXT_COLOR: Color = SLATE.c200;
 const LIST_BG_COLOR: Color = SLATE.c950;
 const GAUGE_COLOR: Color = SLATE.c200;
+
+const GAUGE_WIDTH: usize = 20;
 
 impl App {
     fn render_header(&mut self, area: Rect, buf: &mut Buffer) {
@@ -48,7 +49,6 @@ impl App {
             .border_set(border::THICK);
 
         let rentries_width = 7;
-        let gauge_width = 20; // TODO
 
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.state.selected();
@@ -59,7 +59,7 @@ impl App {
             .map(|(i, entry)| {
                 entry
                     .to_listitem(
-                        gauge_width,
+                        GAUGE_WIDTH,
                         &self.dir_listing.stats,
                         rentries_width,
                         selected.map(|s| s == i).unwrap_or(false),
@@ -147,7 +147,7 @@ impl DirEntry {
         };
 
         spans.push(style_selected(Span::styled(
-            format!("{:>10} ┃", size_str(self.size)),
+            format!("{:>8} ┃", size_str(self.size)),
             text_color,
         )));
 
@@ -261,12 +261,10 @@ fn size_str(size: Option<usize>) -> String {
         return "".to_string();
     }
     let size = size.unwrap();
-    let units = [
-        "  B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB", "ZiB", "YiB",
-    ];
-    let base: usize = 1024;
+    let units = [" B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+    let base: usize = 1000;
     let i = if size > 0 {
-        size.ilog2() / base.ilog2()
+        size.ilog10() / base.ilog10()
     } else {
         0
     };

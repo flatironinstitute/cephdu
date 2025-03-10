@@ -11,6 +11,37 @@ lazy_static! {
     static ref DIR_RENTRIES_ATTR_C: CString = CString::new(DIR_RENTRIES_ATTR).unwrap();
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FSType {
+    inner: i64,
+}
+
+impl FSType {
+    pub fn is_ceph(self: FSType) -> bool {
+        // TODO: what's the "official" f_type?
+        self.inner == 0x00c36400 || self.inner == 0x65735546
+    }
+}
+
+pub fn get_fs(path: &PathBuf) -> Option<FSType> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+
+    // Create and zero-initialize a statfs buffer
+    let mut stat_buf: libc::statfs = unsafe { std::mem::zeroed() };
+
+    // Call statfs and check for error
+    let result = unsafe { libc::statfs(c_path.as_ptr(), &mut stat_buf) };
+
+    if result < 0 {
+        return None;
+    }
+
+    // Return the filesystem type as u32
+    Some(FSType {
+        inner: stat_buf.f_type,
+    })
+}
+
 pub fn get_rentries(path: &PathBuf) -> Option<usize> {
     // First query the size of the attribute, then fetch it.
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
@@ -43,8 +74,6 @@ pub fn get_rentries(path: &PathBuf) -> Option<usize> {
     }
 
     // rentries is a string, so we need to convert it to a number.
-    // let rentries = unsafe { *(buf.as_ptr() as *const usize) };
-    // Some(rentries)
     let rentries = String::from_utf8_lossy(&buf);
     let rentries = rentries.trim().parse::<usize>().ok()?;
     Some(rentries)

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use ratatui::widgets::ListState;
 
-use crate::ceph::get_rentries;
+use crate::ceph::{get_fs, get_rentries, FSType};
 
 const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
 
@@ -21,6 +21,7 @@ pub struct DirListing {
     pub state: ListState,
     sort_mode: SortMode,
     pub stats: ListingStats,
+    pub fs: Option<FSType>,
 }
 
 pub struct ListingStats {
@@ -137,8 +138,14 @@ impl App {
 impl DirListing {
     fn from(path: &PathBuf, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
+        let fs = get_fs(&path);
 
         let mut entries: Vec<DirEntry> = ls(&path)?;
+        if !fs.map(|f| f.is_ceph()).unwrap_or(false) {
+            entries.iter_mut().filter(|e| e.kind == EntryKind::Dir).for_each(|e| {
+                e.size = None;
+            });
+        }
         sort(&mut entries, sort_mode);
 
         let has_parent = path != PathBuf::from("/");
@@ -170,6 +177,7 @@ impl DirListing {
                 max_size,
                 total_size,
             },
+            fs: fs,
         })
     }
 
@@ -221,6 +229,10 @@ impl DirListing {
         sort(&mut self.entries, sort_mode);
 
         self.sort_mode = sort_mode;
+    }
+
+    pub fn is_ceph(&self) -> bool {
+        self.fs.map_or(false, |fs| fs.is_ceph())
     }
 }
 
