@@ -49,6 +49,24 @@ impl App {
             .border_set(border::THICK);
 
         let rentries_width = 7;
+        let (user_width, group_width) = if self.show_owner {
+            (
+                self.dir_listing
+                    .iter_entries()
+                    .filter_map(|e| e.user.as_ref())
+                    .map(|s| s.len())
+                    .max()
+                    .unwrap_or(0),
+                self.dir_listing
+                    .iter_entries()
+                    .filter_map(|e| e.group.as_ref())
+                    .map(|s| s.len())
+                    .max()
+                    .unwrap_or(0),
+            )
+        } else {
+            (0, 0)
+        };
 
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.state.selected();
@@ -62,7 +80,10 @@ impl App {
                         GAUGE_WIDTH,
                         &self.dir_listing.stats,
                         rentries_width,
+                        user_width,
+                        group_width,
                         selected.map(|s| s == i).unwrap_or(false),
+                        self.show_owner,
                     )
                     .fg(TEXT_FG_COLOR)
                     .bg(if selected.map(|s| s == i).unwrap_or(false) {
@@ -116,7 +137,10 @@ impl DirEntry {
         gauge_width: usize,
         listing_stats: &ListingStats,
         rentries_width: usize,
+        user_width: usize,
+        group_width: usize,
         selected: bool,
+        show_owner: bool,
     ) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
@@ -174,8 +198,25 @@ impl DirEntry {
             selected,
         ));
 
+        spans.push(style_selected(Span::styled("┃", text_color)));
+
+        if show_owner {
+            if let Some(user) = &self.user {
+                spans.push(style_selected(Span::styled(
+                    format!(" {:>uwidth$}", user, uwidth = user_width),
+                    text_color,
+                )));
+            }
+            if let Some(group) = &self.group {
+                spans.push(style_selected(Span::styled(
+                    format!(":{:gwidth$}", group, gwidth = group_width),
+                    text_color,
+                )));
+            }
+        }
+
         spans.push(style_selected(Span::styled(
-            format!("┃ {}", self.name),
+            format!(" {}", self.name),
             text_color,
         )));
 
@@ -294,6 +335,17 @@ fn rentries_str(rentries: Option<usize>) -> String {
     } else {
         format!("{:.1} {}", rentries, units[i as usize])
     }
+}
+
+fn column_width<I>(iter: I) -> usize
+where
+    I: IntoIterator,
+    I::Item: AsRef<str>,
+{
+    iter.into_iter()
+        .map(|s| s.as_ref().len())
+        .max()
+        .unwrap_or(0)
 }
 
 /// helper function to create a centered rect using up certain percentage of the available rect `r`

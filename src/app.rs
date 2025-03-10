@@ -1,9 +1,9 @@
-use std::fs;
+use std::{fs, os::unix::fs::MetadataExt};
 use std::path::PathBuf;
 
 use ratatui::widgets::ListState;
 
-use crate::ceph::{get_fs, get_rentries, FSType};
+use crate::fs::{get_fs, get_rentries, FSType, id_to_name};
 
 const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
 
@@ -13,6 +13,7 @@ pub struct App {
     pub dir_listing: DirListing,
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
+    pub show_owner: bool,
 }
 
 pub struct DirListing {
@@ -37,6 +38,8 @@ pub struct DirEntry {
     pub kind: EntryKind,
     pub size: Option<usize>,
     pub rentries: Option<usize>,
+    pub user: Option<String>,
+    pub group: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +60,7 @@ pub enum SortField {
     Name,
     Size,
     Rentries,
+    Owner,
 }
 
 impl SortMode {
@@ -106,6 +110,7 @@ impl App {
             dir_listing: dir_listing,
             original_cwd: original_cwd,
             popup: None,
+            show_owner: false,
         })
     }
 
@@ -154,6 +159,8 @@ impl DirListing {
             kind: EntryKind::Dir,
             size: None, // TODO
             rentries: None,
+            user: None,
+            group: None,
         });
 
         let (max_rentries, total_rentries, max_size, total_size) = entries.iter().fold(
@@ -245,6 +252,9 @@ fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
+        SortField::Owner => {
+            entries.sort_by(|a, b| a.user.cmp(&b.user).then(a.group.cmp(&b.group)).then(a.size.cmp(&b.size)))
+        }
     }
 }
 
@@ -273,14 +283,23 @@ fn ls(path: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
                 name_str
             };
 
+            let name_or_id = |id: u32| {
+                id_to_name(id)
+                    .unwrap_or_else(|| format!("{}", id))
+            };
+
             let size = Some(stat.len() as usize);
             let rentries = get_rentries(&entry.path());
+            let user = Some(name_or_id(stat.uid()));
+            let group = Some(name_or_id(stat.gid()));
 
             Ok(DirEntry {
                 name,
                 kind,
                 size,
                 rentries,
+                user,
+                group,
             })
         })
         .collect();

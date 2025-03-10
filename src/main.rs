@@ -7,7 +7,7 @@ use ratatui::backend::Backend;
 use std::path::PathBuf;
 
 mod app;
-mod ceph;
+mod fs;
 mod ui;
 
 use crate::{app::App, ui::ui};
@@ -58,7 +58,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
 fn handle_key(key: KeyCode, app: &mut App) {
     if app.popup.is_some() {
         match key {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Enter => {
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
                 app.popup(None);
             }
             _ => {}
@@ -112,9 +112,16 @@ fn handle_key(key: KeyCode, app: &mut App) {
         KeyCode::Char('c') | KeyCode::Char('C') => {
             sort_or_reverse(app::SortMode::Reversed(app::SortField::Rentries), app)
         }
+        KeyCode::Char('U') => {
+            sort_or_reverse(app::SortMode::Normal(app::SortField::Owner), app)
+        }
         KeyCode::Char(' ') => {
             app.cd(&app.original_cwd.clone());
         }
+        KeyCode::Char('u') => {
+            app.show_owner = !app.show_owner;
+        }
+        
         _ => {}
     }
 }
