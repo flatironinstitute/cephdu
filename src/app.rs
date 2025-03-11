@@ -1,3 +1,4 @@
+use std::fs::Metadata;
 use std::path::PathBuf;
 use std::{fs, os::unix::fs::MetadataExt};
 
@@ -205,7 +206,8 @@ impl DirListing {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
-        let mut entries: Vec<DirEntry> = ls(&path)?;
+        let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path)?;
+
         if !fs.map(|f| f.is_ceph()).unwrap_or(false) {
             entries
                 .iter_mut()
@@ -220,20 +222,30 @@ impl DirListing {
         let dotdot = has_parent.then(|| DirEntry {
             name: "..".to_string(),
             kind: EntryKind::Dir,
-            size: None, // TODO
+            size: None,
             rentries: None,
             user: None,
             group: None,
         });
 
-        let (max_rentries, total_rentries, max_size, total_size) =
-            entries
-                .iter()
-                .fold((0, 0, 0, 0), |(max_r, total_r, max_s, total_s), entry| {
-                    let r = entry.rentries.unwrap_or(0);
-                    let s = entry.size.unwrap_or(0);
-                    (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
-                });
+        // let (max_rentries, total_rentries, max_size, total_size) =
+        //     entries
+        //         .iter()
+        //         .fold((0, 0, 0, 0), |(max_r, total_r, max_s, total_s), entry| {
+        //             let r = entry.rentries.unwrap_or(0);
+        //             let s = entry.size.unwrap_or(0);
+        //             (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
+        //         });
+        let (max_rentries, max_size) = entries
+            .iter()
+            .fold((0, 0), |(max_r, max_s), entry| {
+                let r = entry.rentries.unwrap_or(0);
+                let s = entry.size.unwrap_or(0);
+                (max_r.max(r), max_s.max(s))
+            });
+        let total_rentries = entry_cwd.rentries.unwrap_or(0);
+        let total_size = entry_cwd.size.unwrap_or(0);
+
         let state = ListState::default().with_selected(Some(0));
 
         Ok(DirListing {
@@ -340,48 +352,53 @@ fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
     }
 }
 
-fn ls(path: &PathBuf) -> Result<Vec<DirEntry>, std::io::Error> {
-    let entries: Result<Vec<_>, std::io::Error> = fs::read_dir(path)?
-        .map(|res| -> Result<DirEntry, std::io::Error> {
-            let entry = res?;
+fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
+    let get_dent = |path: PathBuf, stat: Metadata| -> Result<DirEntry, std::io::Error> {            
+        let kind = if stat.is_dir() {
+            EntryKind::Dir
+        } else if stat.is_symlink() {
+            EntryKind::Symlink
+        } else {
+            EntryKind::File
+        };
 
-            let stat = entry.metadata()?;
-            let kind = if stat.is_dir() {
-                EntryKind::Dir
-            } else if stat.is_symlink() {
-                EntryKind::Symlink
-            } else {
-                EntryKind::File
-            };
+        let name_str = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = if kind == EntryKind::Dir {
+            format!("{}/", name_str)
+        } else {
+            name_str.to_string()
+        };
 
-            let name_str = entry
-                .file_name()
-                .to_str()
-                .unwrap_or("[invalid utf8]")
-                .to_string();
-            let name = if kind == EntryKind::Dir {
-                format!("{}/", name_str)
-            } else {
-                name_str
-            };
+        let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
 
-            let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
+        let size = Some(stat.len() as usize);
 
-            let size = Some(stat.len() as usize);
-            let rentries = get_rentries(&entry.path());
-            let user = Some(name_or_id(stat.uid()));
-            let group = Some(name_or_id(stat.gid()));
+        // rentries seems to include the self-count, which is confusing when there are
+        // only N files but N+1 rentries.
+        let rentries = get_rentries(&path).map(|r| r.saturating_sub(1));
+        let user = Some(name_or_id(stat.uid()));
+        let group = Some(name_or_id(stat.gid()));
 
-            Ok(DirEntry {
-                name,
-                kind,
-                size,
-                rentries,
-                user,
-                group,
-            })
+        Ok(DirEntry {
+            name,
+            kind,
+            size,
+            rentries,
+            user,
+            group,
+        })
+    };
+
+    let entry_cwd = get_dent(PathBuf::from(path), fs::metadata(path)?)?;
+    let entries_result: Result<Vec<_>, std::io::Error> = fs::read_dir(path)?
+        .map(|entry_result| -> Result<DirEntry, std::io::Error> {
+            let entry = entry_result?;
+            let path = entry.path();
+            let metadata = entry.metadata()?;
+            get_dent(path, metadata)
         })
         .collect();
+    let entries = entries_result?;
 
-    entries
+    Ok((entry_cwd, entries))
 }
