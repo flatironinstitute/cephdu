@@ -123,7 +123,7 @@ impl App {
             show_owner: false,
             message: None,
         };
-        app.cd(&cwd);
+        app.try_cd(&cwd)?;
         Ok(app)
     }
 
@@ -134,13 +134,6 @@ impl App {
                 text: format!("Error changing directory: {}", e),
                 kind: MessageKind::Error,
             }));
-        } else if !self.dir_listing.is_ceph() {
-            self.message(Some(Message {
-                text: "Warning: not a Ceph directory".to_string(),
-                kind: MessageKind::Warning,
-            }));
-        } else {
-            self.message(None);
         }
     }
 
@@ -152,6 +145,14 @@ impl App {
         };
         self.dir_listing = DirListing::from(&new, self.dir_listing.sort_mode)?;
         self.cwd = new;
+        if !self.dir_listing.is_ceph() {
+            self.message(Some(Message {
+                text: "Warning: not a Ceph directory".to_string(),
+                kind: MessageKind::Warning,
+            }));
+        } else {
+            self.message(None);
+        }
         Ok(())
     }
 
