@@ -95,9 +95,8 @@ pub fn get_fs(path: &Path) -> Option<FSType> {
         return None;
     }
 
-    // Return the filesystem type as u32
     Some(FSType {
-        inner: stat_buf.f_type,
+        inner: stat_buf.f_type as i64,
     })
 }
 
