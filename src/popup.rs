@@ -1,4 +1,4 @@
-    use ratatui::widgets::ScrollbarState;
+use ratatui::widgets::ScrollbarState;
 
 use crate::ui::POPUP_TEXT_HEIGHT;
 
