@@ -70,7 +70,7 @@ impl App {
 
         match key {
             KeyCode::Enter => {
-                if let Some(selected) = self.dir_listing.state.selected() {
+                if let Some(selected) = self.dir_listing.selected() {
                     let entry = self.dir_listing.get(selected);
                     if entry.kind == app::EntryKind::Dir {
                         self.cd(&PathBuf::from(&entry.name));
@@ -78,30 +78,22 @@ impl App {
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.dir_listing.state.select_next();
+                self.dir_listing.select_next(1);
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                self.dir_listing.state.select_previous();
+                self.dir_listing.select_prev(1);
             }
             KeyCode::Home | KeyCode::Char('g') => {
-                self.dir_listing.state.select_first();
+                self.dir_listing.select_first();
             }
             KeyCode::End | KeyCode::Char('G') => {
-                self.dir_listing.state.select_last();
+                self.dir_listing.select_last();
             }
             KeyCode::PageUp => {
-                let state = &mut self.dir_listing.state;
-                if let Some(idx) = state.selected() {
-                    let new_idx = idx.saturating_sub(PAGE_BY);
-                    state.select(Some(new_idx));
-                }
+                self.dir_listing.select_prev(PAGE_BY);
             }
             KeyCode::PageDown => {
-                let state = &mut self.dir_listing.state;
-                if let Some(idx) = state.selected() {
-                    let new_idx = idx.saturating_add(PAGE_BY);
-                    state.select(Some(new_idx));
-                }
+                self.dir_listing.select_next(PAGE_BY);
             }
             KeyCode::Backspace | KeyCode::Char('h') => {
                 self.cd(&"..".into());

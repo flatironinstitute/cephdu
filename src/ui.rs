@@ -86,7 +86,7 @@ impl App {
         };
 
         // Iterate through all elements in the `items` and stylize them.
-        let selected = self.dir_listing.state.selected();
+        let selected = self.dir_listing.selected();
         let items: Vec<ListItem> = self
             .dir_listing
             .iter_entries()
@@ -118,7 +118,7 @@ impl App {
             .highlight_spacing(HighlightSpacing::Always)
             .bg(LIST_BG_COLOR);
 
-        StatefulWidget::render(list, area, buf, &mut self.dir_listing.state);
+        StatefulWidget::render(list, area, buf, &mut self.dir_listing.state_mut());
     }
 
     fn render_message(&self, message: &Option<Message>, area: Rect, buf: &mut Buffer) {

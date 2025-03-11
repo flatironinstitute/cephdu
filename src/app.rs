@@ -23,7 +23,7 @@ pub struct App {
 pub struct DirListing {
     dotdot: Option<DirEntry>,
     entries: Vec<DirEntry>,
-    pub state: ListState,
+    state: ListState,
     sort_mode: SortMode,
     pub stats: ListingStats,
     pub fs: Option<FSType>,
@@ -312,6 +312,62 @@ impl DirListing {
         } else {
             &self.entries[idx]
         }
+    }
+
+    pub fn len(&self) -> usize {
+        // Count the ".." entry if we have one.
+        let len = self.entries.len();
+        if self.dotdot.is_some() {
+            len + 1
+        } else {
+            len
+        }
+    }
+
+    pub fn select_next(&mut self, by: usize) {
+        // Normally we would use select_next(), but that has a weird interaction
+        // with the fact that we're manually rendering the list item highlighting.
+        // Specifically, select_next() may scroll off the end of the list, so the
+        // highlighting disappears. The state index is corrected after the list is
+        // rendered, but then it's too late.
+        let len = self.len();
+        let state = &mut self.state;
+        if let Some(idx) = state.selected() {
+            let next = idx.saturating_add(by).min(len.saturating_sub(1));
+            state.select(Some(next));
+        } else {
+            state.select(Some(0));
+        }
+    }
+
+    pub fn select_prev(&mut self, by: usize) {
+        let len = self.len();
+        let state = &mut self.state;
+        if let Some(idx) = state.selected() {
+            let prev = idx.saturating_sub(by);
+            state.select(Some(prev));
+        } else {
+            state.select(Some(len.saturating_sub(1)));
+        }
+    }
+
+    pub fn select_first(&mut self) {
+        self.state.select(Some(0));
+    }
+
+    pub fn select_last(&mut self) {
+        let len = self.len();
+        if len > 0 {
+            self.state.select(Some(len - 1));
+        }
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.state.selected()
+    }
+
+    pub fn state_mut(&mut self) -> &mut ListState {
+        &mut self.state
     }
 
     pub fn sort_mode(&self) -> SortMode {
