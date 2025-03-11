@@ -96,6 +96,7 @@ pub fn get_fs(path: &Path) -> Option<FSType> {
     }
 
     Some(FSType {
+        #[allow(clippy::unnecessary_cast)]
         inner: stat_buf.f_type as i64,
     })
 }
