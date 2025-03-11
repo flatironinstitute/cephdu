@@ -53,9 +53,13 @@ impl App {
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
-        let title =
-            Line::from(format!(" {} ", self.cwd.to_str().unwrap_or("[invalid UTF-8]")).bold());
-        // let title = Line::from(self.cwd);
+        let title = Line::from(format!(
+            " {} ━━ {}, {} files ",
+            self.cwd.to_str().unwrap_or("[invalid UTF-8]"),
+            size_str(Some(self.dir_listing.stats.total_size), false),
+            rentries_str(Some(self.dir_listing.stats.total_rentries), false)
+        ))
+        .bold();
 
         let block = Block::bordered()
             .title(title.left_aligned())
@@ -205,7 +209,7 @@ impl DirEntry {
         };
 
         spans.push(style_selected(Span::styled(
-            format!("{:>8} ┃", size_str(self.size)),
+            format!("{:>8} ┃", size_str(self.size, true)),
             text_color,
         )));
 
@@ -219,7 +223,7 @@ impl DirEntry {
         spans.push(style_selected(Span::styled(
             format!(
                 "┃  {:>rwidth$} ┃",
-                rentries_str(self.rentries),
+                rentries_str(self.rentries, true),
                 rwidth = rentries_width,
             ),
             text_color,
@@ -331,7 +335,7 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
     spans
 }
 
-fn size_str(size: Option<usize>) -> String {
+fn size_str(size: Option<usize>, align: bool) -> String {
     if size.is_none() {
         return "".to_string();
     }
@@ -345,18 +349,18 @@ fn size_str(size: Option<usize>) -> String {
     };
     let size = size as f64 / base.pow(i) as f64;
     if i == 0 {
-        format!("{:.0}   {}", size, units[i as usize])
+        format!("{:.0}{}{}", size, if align { "  " } else { "" }, units[i as usize])
     } else {
         format!("{:.1} {}", size, units[i as usize])
     }
 }
 
-fn rentries_str(rentries: Option<usize>) -> String {
+fn rentries_str(rentries: Option<usize>, align: bool) -> String {
     if rentries.is_none() {
         return "".to_string();
     }
     let rentries = rentries.unwrap();
-    let units = ["  ", "K", "M", "G", "T", "P", "E", "Z", "Y"];
+    let units = ["", "K", "M", "G", "T", "P", "E", "Z", "Y"];
     let base: usize = 1000;
     let i = if rentries > 0 {
         rentries.ilog10() / base.ilog10()
@@ -365,7 +369,7 @@ fn rentries_str(rentries: Option<usize>) -> String {
     };
     let rentries = rentries as f64 / base.pow(i) as f64;
     if i == 0 {
-        format!("{:.0}  {}", rentries, units[i as usize])
+        format!("{:.0}{}", rentries, if align { "    " } else { "" })
     } else {
         format!("{:.1} {}", rentries, units[i as usize])
     }
