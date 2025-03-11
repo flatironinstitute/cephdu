@@ -1,10 +1,9 @@
 use std::ffi::CString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::Path;
 
 use lazy_static::lazy_static;
-use libc;
 
 const DIR_RENTRIES_ATTR: &str = "ceph.dir.rentries";
 
@@ -83,7 +82,7 @@ fn id_to_name_uncached(id: u32) -> Option<String> {
     Some(name)
 }
 
-pub fn get_fs(path: &PathBuf) -> Option<FSType> {
+pub fn get_fs(path: &Path) -> Option<FSType> {
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
 
     // Create and zero-initialize a statfs buffer
@@ -102,7 +101,7 @@ pub fn get_fs(path: &PathBuf) -> Option<FSType> {
     })
 }
 
-pub fn get_rentries(path: &PathBuf) -> Option<usize> {
+pub fn get_rentries(path: &Path) -> Option<usize> {
     // First query the size of the attribute, then fetch it.
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
 

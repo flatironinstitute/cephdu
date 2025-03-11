@@ -118,7 +118,7 @@ impl App {
             .highlight_spacing(HighlightSpacing::Always)
             .bg(LIST_BG_COLOR);
 
-        StatefulWidget::render(list, area, buf, &mut self.dir_listing.state_mut());
+        StatefulWidget::render(list, area, buf, self.dir_listing.state_mut());
     }
 
     fn render_message(&self, message: &Option<Message>, area: Rect, buf: &mut Buffer) {

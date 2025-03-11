@@ -1,5 +1,5 @@
 use std::fs::Metadata;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fs, os::unix::fs::MetadataExt};
 
 use ratatui::widgets::ListState;
@@ -79,7 +79,7 @@ impl SortMode {
         matches!(self, SortMode::Reversed(_))
     }
 
-    pub fn to_reversed(&self) -> SortMode {
+    pub fn as_reversed(&self) -> SortMode {
         match self {
             SortMode::Normal(field) => SortMode::Reversed(*field),
             SortMode::Reversed(field) => SortMode::Normal(*field),
@@ -134,15 +134,13 @@ impl App {
                 text: format!("Error changing directory: {}", e),
                 kind: MessageKind::Error,
             }));
+        } else if !self.dir_listing.is_ceph() {
+            self.message(Some(Message {
+                text: "Warning: not a Ceph directory".to_string(),
+                kind: MessageKind::Warning,
+            }));
         } else {
-            if !self.dir_listing.is_ceph() {
-                self.message(Some(Message {
-                    text: "Warning: not a Ceph directory".to_string(),
-                    kind: MessageKind::Warning,
-                }));
-            } else {
-                self.message(None);
-            }
+            self.message(None);
         }
     }
 
@@ -193,7 +191,7 @@ impl App {
     pub fn sort_or_reverse(&mut self, sort_mode: SortMode) {
         self.dir_listing.sort(
             if sort_mode.field() == self.dir_listing.sort_mode().field() {
-                self.dir_listing.sort_mode().to_reversed()
+                self.dir_listing.sort_mode().as_reversed()
             } else {
                 sort_mode
             },
@@ -202,7 +200,7 @@ impl App {
 }
 
 impl DirListing {
-    fn from(path: &PathBuf, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
+    fn from(path: &Path, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
@@ -259,7 +257,7 @@ impl DirListing {
                 max_size,
                 total_size,
             },
-            fs: fs,
+            fs,
         })
     }
 
@@ -386,11 +384,11 @@ impl DirListing {
     }
 
     pub fn is_ceph(&self) -> bool {
-        self.fs.map_or(false, |fs| fs.is_ceph())
+        self.fs.is_some_and(|fs| fs.is_ceph())
     }
 }
 
-fn sort(entries: &mut Vec<DirEntry>, sort_mode: SortMode) {
+fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
     match sort_mode.field() {
         SortField::Name => entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.size.cmp(&b.size))),
         SortField::Size => {
