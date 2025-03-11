@@ -109,20 +109,21 @@ impl App {
             cwd.clone()
         } else {
             std::env::current_dir()?
-        }
-        .canonicalize()?;
+        };
 
-        let dir_listing = DirListing::from(&cwd, DEFAULT_SORT_MODE)?;
+        let dir_listing = DirListing::default();
         let original_cwd = cwd.clone();
-        Ok(App {
+        let mut app = App {
             should_exit: false,
-            cwd: cwd,
-            dir_listing: dir_listing,
-            original_cwd: original_cwd,
+            cwd: PathBuf::new(),
+            dir_listing,
+            original_cwd,
             popup: None,
             show_owner: false,
             message: None,
-        })
+        };
+        app.cd(&cwd);
+        Ok(app)
     }
 
     pub fn cd(&mut self, path: &PathBuf) {
@@ -248,6 +249,22 @@ impl DirListing {
             },
             fs: fs,
         })
+    }
+
+    fn default() -> DirListing {
+        DirListing {
+            dotdot: None,
+            entries: Vec::new(),
+            state: ListState::default(),
+            sort_mode: DEFAULT_SORT_MODE,
+            stats: ListingStats {
+                max_rentries: 0,
+                total_rentries: 0,
+                max_size: 0,
+                total_size: 0,
+            },
+            fs: None,
+        }
     }
 
     pub fn iter_entries(&self) -> impl Iterator<Item = &DirEntry> {

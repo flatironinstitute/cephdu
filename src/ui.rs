@@ -33,8 +33,8 @@ const NONDIR_TEXT_COLOR: Color = SLATE.c200;
 const LIST_BG_COLOR: Color = SLATE.c950;
 const GAUGE_COLOR: Color = SLATE.c200;
 
-const ERROR_MESSAGE_STYLE: Style = Style::new().fg(RED.c50).bg(RED.c900);
-const WARNING_MESSAGE_STYLE: Style = Style::new().fg(YELLOW.c50).bg(YELLOW.c900);
+const ERROR_MESSAGE_STYLE: Style = Style::new().fg(RED.c50).bg(RED.c800);
+const WARNING_MESSAGE_STYLE: Style = Style::new().fg(YELLOW.c950).bg(YELLOW.c300);
 const INFO_MESSAGE_STYLE: Style = Style::new().fg(SLATE.c50).bg(SLATE.c950);
 
 const POPUP_FG_COLOR: Color = SLATE.c50;
