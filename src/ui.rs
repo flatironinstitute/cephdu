@@ -1,4 +1,4 @@
-use ratatui::{
+    use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
