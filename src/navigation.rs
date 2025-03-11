@@ -15,13 +15,13 @@ pub const HELP: &[[&str; 2]] = &[
         ["Page Down", "Jump cursor down"],
         ["Page Up", "Jump cursor up"],
         ["Enter", "Open directory"],
-        ["Backspace, h", "Go to parent directory"],
+        ["Backspace", "Go to parent directory"],
         ["n", "Sort by name"],
         ["s", "Sort by size"],
         ["c, C", "Sort by file count"],
         ["U", "Sort by owner"],
         ["u", "Toggle show owner"],
-        ["?", "Show this help message"],
+        ["?, h", "Show this help message"],
         ["Home, g", "Select first entry"],
         ["End, G", "Select last entry"],
     ];
@@ -95,7 +95,7 @@ impl App {
             KeyCode::PageDown => {
                 self.dir_listing.select_next(PAGE_BY);
             }
-            KeyCode::Backspace | KeyCode::Char('h') => {
+            KeyCode::Backspace => {
                 self.cd(&"..".into());
             }
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -115,7 +115,7 @@ impl App {
             KeyCode::Char('u') => {
                 self.show_owner = !self.show_owner;
             }
-            KeyCode::Char('?') => {
+            KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.help();
             }
             _ => {}

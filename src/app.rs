@@ -428,9 +428,13 @@ fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
 
         let size = Some(stat.len() as usize);
 
-        // rentries seems to include the self-count, which is confusing when there are
-        // only N files but N+1 rentries.
-        let rentries = get_rentries(&path).map(|r| r.saturating_sub(1));
+        let rentries: Option<usize> = if kind == EntryKind::Dir {
+            // rentries seems to include the self-count, which is confusing when there are
+            // only N files but N+1 rentries.
+            get_rentries(&path).map(|r| r.saturating_sub(1))
+        } else {
+            None
+        };
         let user = Some(name_or_id(stat.uid()));
         let group = Some(name_or_id(stat.gid()));
 
