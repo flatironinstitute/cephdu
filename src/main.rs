@@ -6,12 +6,14 @@ use ratatui::backend::Backend;
 use std::path::PathBuf;
 
 mod app;
-mod navigation;
 mod fs;
-mod ui;
+mod navigation;
 mod popup;
+mod ui;
 
 use crate::{app::App, ui::ui};
+
+const CEPH_USER_DIR: &str = "/mnt/ceph/users";
 
 /// Display ceph space and file count (inode) usage in an interactive terminal
 #[derive(Parser)]
@@ -22,7 +24,10 @@ struct Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
-    let path: PathBuf = args.path.clone().unwrap_or(".".into());
+    let path: PathBuf = args.path.clone().unwrap_or_else(|| {
+        let username = std::env::var("USER").unwrap_or_else(|_| String::from(""));
+        PathBuf::from(CEPH_USER_DIR).join(&username)
+    });
 
     let mut app = App::new(Some(&path)).unwrap_or_else(|e| {
         eprintln!("Error opening {:?}: {}", path, e);
