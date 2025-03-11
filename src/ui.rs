@@ -65,7 +65,6 @@ impl App {
             .title(title.left_aligned())
             .border_set(border::THICK);
 
-        let rentries_width = 7;
         let (user_width, group_width) = if self.show_owner {
             (
                 self.dir_listing
@@ -96,7 +95,6 @@ impl App {
                     .to_listitem(
                         GAUGE_WIDTH,
                         &self.dir_listing.stats,
-                        rentries_width,
                         user_width,
                         group_width,
                         selected.map(|s| s == i).unwrap_or(false),
@@ -174,7 +172,6 @@ impl DirEntry {
         &self,
         gauge_width: usize,
         listing_stats: &ListingStats,
-        rentries_width: usize,
         user_width: usize,
         group_width: usize,
         selected: bool,
@@ -221,11 +218,7 @@ impl DirEntry {
         ));
 
         spans.push(style_selected(Span::styled(
-            format!(
-                "┃  {:>rwidth$} ┃",
-                rentries_str(self.rentries, true),
-                rwidth = rentries_width,
-            ),
+            format!("┃  {:>7} ┃", rentries_str(self.rentries, true),),
             text_color,
         )));
 
@@ -349,7 +342,12 @@ fn size_str(size: Option<usize>, align: bool) -> String {
     };
     let size = size as f64 / base.pow(i) as f64;
     if i == 0 {
-        format!("{:.0}{}{}", size, if align { "  " } else { "" }, units[i as usize])
+        format!(
+            "{:.0}{}{}",
+            size,
+            if align { "  " } else { "" },
+            units[i as usize]
+        )
     } else {
         format!("{:.1} {}", size, units[i as usize])
     }

@@ -235,13 +235,11 @@ impl DirListing {
         //             let s = entry.size.unwrap_or(0);
         //             (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
         //         });
-        let (max_rentries, max_size) = entries
-            .iter()
-            .fold((0, 0), |(max_r, max_s), entry| {
-                let r = entry.rentries.unwrap_or(0);
-                let s = entry.size.unwrap_or(0);
-                (max_r.max(r), max_s.max(s))
-            });
+        let (max_rentries, max_size) = entries.iter().fold((0, 0), |(max_r, max_s), entry| {
+            let r = entry.rentries.unwrap_or(0);
+            let s = entry.size.unwrap_or(0);
+            (max_r.max(r), max_s.max(s))
+        });
         let total_rentries = entry_cwd.rentries.unwrap_or(0);
         let total_size = entry_cwd.size.unwrap_or(0);
 
@@ -316,11 +314,7 @@ impl DirListing {
     pub fn len(&self) -> usize {
         // Count the ".." entry if we have one.
         let len = self.entries.len();
-        if self.dotdot.is_some() {
-            len + 1
-        } else {
-            len
-        }
+        if self.dotdot.is_some() { len + 1 } else { len }
     }
 
     pub fn select_next(&mut self, by: usize) {
@@ -408,7 +402,7 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
 }
 
 fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
-    let get_dent = |path: PathBuf, stat: Metadata| -> Result<DirEntry, std::io::Error> {            
+    let get_dent = |path: PathBuf, stat: Metadata| -> Result<DirEntry, std::io::Error> {
         let kind = if stat.is_dir() {
             EntryKind::Dir
         } else if stat.is_symlink() {

@@ -24,7 +24,7 @@ impl Popup {
             scroll: 0,
             scrollbar_state: ScrollbarState::default()
                 .position(0)
-                .content_length(text_height.saturating_sub(POPUP_TEXT_HEIGHT))
+                .content_length(text_height.saturating_sub(POPUP_TEXT_HEIGHT)),
         }
     }
     pub fn scroll(&self) -> usize {

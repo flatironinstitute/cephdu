@@ -9,28 +9,28 @@ use crate::ui::POPUP_TEXT_HEIGHT;
 static PAGE_BY: usize = 10;
 
 pub const HELP: &[[&str; 2]] = &[
-        ["q, Esc", "Quit"],
-        ["Down, j", "Move cursor down"],
-        ["Up, k", "Move cursor up"],
-        ["Page Down", "Jump cursor down"],
-        ["Page Up", "Jump cursor up"],
-        ["Enter", "Open directory"],
-        ["Backspace", "Go to parent directory"],
-        ["n", "Sort by name"],
-        ["s", "Sort by size"],
-        ["c, C", "Sort by file count"],
-        ["U", "Sort by owner"],
-        ["u", "Toggle show owner"],
-        ["?, h", "Show this help message"],
-        ["Home, g", "Select first entry"],
-        ["End, G", "Select last entry"],
-    ];
+    ["q, Esc", "Quit"],
+    ["Down, j", "Move cursor down"],
+    ["Up, k", "Move cursor up"],
+    ["Page Down", "Jump cursor down"],
+    ["Page Up", "Jump cursor up"],
+    ["Enter", "Open directory"],
+    ["Backspace", "Go to parent directory"],
+    ["n", "Sort by name"],
+    ["s", "Sort by size"],
+    ["c, C", "Sort by file count"],
+    ["U", "Sort by owner"],
+    ["u", "Toggle show owner"],
+    ["?, h", "Show this help message"],
+    ["Home, g", "Select first entry"],
+    ["End, G", "Select last entry"],
+];
 
 impl App {
     pub fn handle_key(&mut self, key: KeyCode) {
         if self.popup.is_some() {
             match key {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?')  => {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
                     self.popup(None, None);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -102,7 +102,9 @@ impl App {
                 self.should_exit = true;
             }
             KeyCode::Char('n') => self.sort_or_reverse(app::SortMode::Normal(app::SortField::Name)),
-            KeyCode::Char('s') => self.sort_or_reverse(app::SortMode::Reversed(app::SortField::Size)),
+            KeyCode::Char('s') => {
+                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::Size))
+            }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 self.sort_or_reverse(app::SortMode::Reversed(app::SortField::Rentries))
             }
