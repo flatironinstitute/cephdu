@@ -59,10 +59,14 @@ impl App {
             size_str(Some(self.dir_listing.stats.total_size), false),
             rentries_str(Some(self.dir_listing.stats.total_rentries), false)
         ))
+        .fg(TEXT_FG_COLOR)
         .bold();
+
+        let helptitle = Line::from(" Press ? for help ").fg(TEXT_FG_COLOR).bold();
 
         let block = Block::bordered()
             .title(title.left_aligned())
+            .title_bottom(helptitle.right_aligned())
             .border_set(border::THICK);
 
         let (user_width, group_width) = if self.show_owner {
