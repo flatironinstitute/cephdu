@@ -156,8 +156,8 @@ impl App {
         Ok(())
     }
 
-    pub fn popup(&mut self, title: Option<&str>, text: Option<&str>) {
-        self.popup = text.map(|x| Popup::new(title.unwrap_or(""), x));
+    pub fn popup(&mut self, title: Option<&str>, bottom_title: Option<&str>, text: Option<&str>) {
+        self.popup = text.map(|x| Popup::new(title.unwrap_or(""), bottom_title.unwrap_or(""), x));
     }
 
     pub fn message(&mut self, message: Option<Message>) {
@@ -179,14 +179,18 @@ impl App {
         let mut help_text = String::new();
         for h in navigation::HELP {
             help_text.push_str(&format!(
-                "{:>lhs$}: {:rhs$}\n",
+                "{:>lhs$}:  {:rhs$}\n",
                 h[0],
                 h[1],
                 lhs = lhs_width,
                 rhs = rhs_width
             ));
         }
-        self.popup(Some("Help"), Some(&help_text));
+        self.popup(
+            Some("Help"),
+            Some(env!("CARGO_PKG_REPOSITORY")),
+            Some(&help_text),
+        );
     }
 
     pub fn sort_or_reverse(&mut self, sort_mode: SortMode) {

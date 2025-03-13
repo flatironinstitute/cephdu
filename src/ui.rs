@@ -6,7 +6,7 @@ use ratatui::{
         Color, Modifier, Style, Stylize,
         palette::tailwind::{RED, SLATE, YELLOW},
     },
-    symbols::border,
+    symbols::{self, border},
     text::{Line, Span, Text},
     widgets::{
         Block, Borders, Clear, HighlightSpacing, List, ListItem, Paragraph, Scrollbar,
@@ -139,13 +139,25 @@ impl App {
     }
 }
 
-fn render_popup(popup: &mut Popup, area: Rect, buf: &mut Buffer) {
+fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
+    let top_border_set = symbols::border::Set {
+        // Connect the top block with the bottom block
+        bottom_left: symbols::line::THICK.vertical_right,
+        ..symbols::border::THICK
+    };
+
     let block = Block::default()
-        .borders(Borders::ALL)
         .title(Span::styled(
             format!(" {} ", popup.title),
             Style::default().fg(POPUP_FG_COLOR),
         ))
+        .borders(Borders::ALL)
+        .border_set(top_border_set)
+        .border_style(Style::default().fg(POPUP_FG_COLOR))
+        .bg(LIST_BG_COLOR);
+
+    let footer_block = Block::default()
+        .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
         .border_style(Style::default().fg(POPUP_FG_COLOR))
         .border_set(border::THICK)
         .bg(LIST_BG_COLOR);
@@ -158,10 +170,19 @@ fn render_popup(popup: &mut Popup, area: Rect, buf: &mut Buffer) {
         .fg(POPUP_FG_COLOR)
         .scroll((popup.scroll() as u16, 0));
 
-    Clear.render(area, buf);
-    paragraph.render(area, buf);
+    let footer = Paragraph::new(popup.bottom_title.clone())
+        .block(footer_block)
+        .centered()
+        .fg(POPUP_FG_COLOR);
+
+    Clear.render(areas[0], buf);
+    Clear.render(areas[1], buf);
+
+    paragraph.render(areas[0], buf);
+    footer.render(areas[1], buf);
+
     Scrollbar::new(ScrollbarOrientation::VerticalRight).render(
-        area,
+        areas[0],
         buf,
         &mut popup.scrollbar_state,
     );
@@ -377,27 +398,29 @@ fn rentries_str(rentries: Option<usize>, align: bool) -> String {
     }
 }
 
-/// helper function to create a centered rect using up certain percentage of the available rect `r`
-fn centered_rect(xsize: u16, ysize: u16, r: Rect) -> Rect {
-    // Cut the given rectangle into three vertical pieces
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Fill(1),
-            Constraint::Length(ysize),
-            Constraint::Fill(1),
-        ])
-        .split(r);
-
-    // Then cut the middle vertical piece into three width-wise pieces
-    Layout::default()
+fn popup_rects(xsize: u16, ysize: u16, r: Rect) -> [Rect; 2] {
+    // Cut the x axis
+    let xrect = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Fill(1),
             Constraint::Length(xsize),
             Constraint::Fill(1),
         ])
-        .split(popup_layout[1])[1] // Return the middle chunk
+        .split(r)[1]; // Return the middle chunk
+
+    // Cut the y axis
+    let yrects = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Fill(1),
+            Constraint::Length(ysize),
+            Constraint::Length(2), // popup footer
+            Constraint::Fill(1),
+        ])
+        .split(xrect);
+
+    [yrects[1], yrects[2]]
 }
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
@@ -416,11 +439,11 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     app.render_message(&app.message, message_area, frame.buffer_mut());
 
     if let Some(popup) = &mut app.popup {
-        let popup_area = centered_rect(
+        let popup_areas = popup_rects(
             popup.text_width as u16 + 4,
             POPUP_TEXT_HEIGHT as u16 + 2,
             frame.area(),
         );
-        render_popup(popup, popup_area, frame.buffer_mut());
+        render_popup(popup, popup_areas, frame.buffer_mut());
     }
 }

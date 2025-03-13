@@ -31,7 +31,7 @@ impl App {
         if self.popup.is_some() {
             match key {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
-                    self.popup(None, None);
+                    self.popup(None, None, None);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if let Some(popup) = &mut self.popup {

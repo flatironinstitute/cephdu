@@ -5,6 +5,7 @@ use crate::ui::POPUP_TEXT_HEIGHT;
 #[derive(Debug)]
 pub struct Popup {
     pub title: String,
+    pub bottom_title: String,
     pub text: String,
     pub text_width: usize,
     pub text_height: usize,
@@ -13,11 +14,18 @@ pub struct Popup {
 }
 
 impl Popup {
-    pub fn new(title: &str, text: &str) -> Self {
-        let text_width = text.lines().map(|line| line.len()).max().unwrap_or(0);
+    pub fn new(title: &str, bottom_title: &str, text: &str) -> Self {
+        let text_width = text
+            .lines()
+            .map(|line| line.len())
+            .max()
+            .unwrap_or(0)
+            .max(title.len())
+            .max(bottom_title.len() + 2);
         let text_height = text.lines().count();
         Popup {
             title: title.to_string(),
+            bottom_title: bottom_title.to_string(),
             text: text.to_string(),
             text_width,
             text_height,
