@@ -2,6 +2,12 @@
 name = "cephdu"
 version = "0.1.1"
 edition = "2024"
+description = " A ncdu-like TUI for the Ceph File System, using xattrs instead of crawling"
+license = "MIT"
+authors = ["Lehman Garrison"]
+repository = "https://github.com/flatironinstitute/cephdu"
+keywords = ["ceph", "tui", "ncdu", "disk-usage"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 clap = { version = "4.5.31", features = ["derive"] }
