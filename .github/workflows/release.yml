@@ -11,6 +11,7 @@ on:
 jobs:
   build-and-attach:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - platform: x86_64-unknown-linux-gnu
@@ -36,7 +37,9 @@ jobs:
       - name: Upload as release asset
         run: |
           cd target/${{ matrix.platform }}/release
-          mv cephdu cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}
-          gh release upload "${{ github.event.release.tag_name }}" target/${{ matrix.platform }}/release/cephdu
+          name="cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}"
+          mv cephdu $name
+          # gh release upload "${{ github.event.release.tag_name }}" $name
+          gh release upload v0.2.0 $name
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
