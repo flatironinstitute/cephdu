@@ -14,8 +14,7 @@ mod ui;
 
 use crate::{app::App, ui::ui};
 
-// TODO: make this configurable/portable
-const CEPH_USER_DIR: &str = "/mnt/ceph/users";
+const DEFAULT_DIR: Option<&str> = option_env!("CEPHDU_DEFAULT_DIR");
 
 /// Display ceph space and file count (inode) usage in an interactive terminal
 #[derive(Parser)]
@@ -26,12 +25,10 @@ struct Cli {
 
 fn main() -> Result<()> {
     let args = Cli::parse();
+
     let path_was_explicit = args.path.is_some();
 
-    let path: PathBuf = args.path.clone().unwrap_or_else(|| {
-        let username = std::env::var("USER").unwrap_or_else(|_| String::from(""));
-        PathBuf::from(CEPH_USER_DIR).join(&username)
-    });
+    let path: PathBuf = args.path.unwrap_or_else(default_dir);
 
     let mut app = App::new(Some(&path)).unwrap_or_else(|e| {
         let mut app = App::new(Some(&PathBuf::from("."))).unwrap_or_else(|_| {
@@ -71,4 +68,33 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
         }
     }
     Ok(())
+}
+
+/// Returns the cwd if it is a ceph dir.
+/// If not, returns DEFAULT_DIR if set.
+/// If not, the cwd is returned.
+/// Instances of $USER in DEFAULT_DIR are replaced with the current username.
+fn default_dir() -> PathBuf {
+    let cwd = PathBuf::from(".");
+    if DEFAULT_DIR.is_none() {
+        // short-circuit testing if cwd is ceph
+        return cwd;
+    }
+
+    if fs::get_fs(&cwd).map(fs::FSType::is_ceph).unwrap_or(false) {
+        return cwd;
+    }
+
+    DEFAULT_DIR
+        .and_then(|dir| {
+            if dir.contains("$USER") {
+                match std::env::var("USER") {
+                    Ok(username) => Some(PathBuf::from(dir.replace("$USER", &username))),
+                    Err(_) => None,
+                }
+            } else {
+                Some(PathBuf::from(dir))
+            }
+        })
+        .unwrap_or(PathBuf::from("."))
 }

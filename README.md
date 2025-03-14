@@ -16,6 +16,12 @@ To build an executable (dynamically linked by default):
 cargo build --release
 ```
 
+To build an executable that contains a default path to use if one is not given:
+```console
+CEPHDU_DEFAULT_DIR=/mnt/ceph/users/\$USER cargo build --release
+```
+The literal string `$USER` is substituted at runtime.
+
 To build a static executable:
 ```console
 cargo build --release cargo build --target=x86_64-unknown-linux-musl
