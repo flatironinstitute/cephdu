@@ -6,13 +6,18 @@ on:
 
 jobs:
   build-and-attach:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [x86_64-unknown-linux-gnu, x86_64-unknown-linux-musl, aarch64-unknown-linux-gnu, aarch64-unknown-linux-musl]
+    matrix:
+      include:
+        - platform: x86_64-unknown-linux-gnu
+          runs-on: ubuntu-latest
+        - platform: x86_64-unknown-linux-musl
+          runs-on: ubuntu-latest
+        - platform: aarch64-unknown-linux-gnu
+          runs-on: ubuntu-24.04-arm
+        - platform: aarch64-unknown-linux-musl
+          runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Install targets
         run: |
@@ -23,10 +28,9 @@ jobs:
           cargo build --release --target ${{ matrix.platform }}
       
       - name: Upload as release asset
-        uses: softprops/action-gh-release@v1
-        with:
-          # Attach to the existing release identified by the tag
-          tag_name: ${{ github.event.release.tag_name }}
-          files: target/${{ matrix.platform }}/release/cephdu
+        run: |
+          cd target/${{ matrix.platform }}/release
+          mv cephdu cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}
+          gh release upload "${{ github.event.release.tag_name }}" target/${{ matrix.platform }}/release/cephdu
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
