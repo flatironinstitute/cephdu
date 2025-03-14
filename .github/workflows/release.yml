@@ -1,12 +1,8 @@
 name: Publish Binaries
 
-# on:
-#   release:
-#     types: [published]
-
-# for testing:
 on:
-  workflow_dispatch:
+  release:
+    types: [published]
 
 jobs:
   build-and-attach:
@@ -37,10 +33,8 @@ jobs:
       - name: Upload as release asset
         run: |
           cd target/${{ matrix.platform }}/release
-          # name="cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}"
-          name="cephdu-v0.2.0-${{ matrix.platform }}"
+          name="cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}"
           mv cephdu $name
-          # gh release upload "${{ github.event.release.tag_name }}" $name
-          gh release upload v0.2.0 $name
+          gh release upload "${{ github.event.release.tag_name }}" $name
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
