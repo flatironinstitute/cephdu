@@ -424,17 +424,15 @@ fn popup_rects(xsize: u16, ysize: u16, r: Rect) -> [Rect; 2] {
 }
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
-    let [header_area, message_area, main_area, _footer_area] = Layout::vertical([
+    let [header_area, message_area, main_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
-        Constraint::Length(1),
     ])
     .areas(frame.area());
 
     app.render_header(header_area, frame.buffer_mut());
     app.render_list(main_area, frame.buffer_mut());
-    // app.render_footer(footer_area, frame.buffer_mut());
 
     app.render_message(&app.message, message_area, frame.buffer_mut());
 
