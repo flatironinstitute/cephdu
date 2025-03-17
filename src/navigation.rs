@@ -24,6 +24,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
+    ["r, F5", "Refresh"],
 ];
 
 impl App {
@@ -116,6 +117,9 @@ impl App {
             }
             KeyCode::Char('u') => {
                 self.show_owner = !self.show_owner;
+            }
+            KeyCode::Char('r') | KeyCode::F(5) => {
+                self.cd(&self.cwd.clone());
             }
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.help();
