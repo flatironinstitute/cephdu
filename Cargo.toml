@@ -1,6 +1,6 @@
 [package]
 name = "cephdu"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A ncdu-like TUI for the Ceph File System, using xattrs instead of crawling"
 license = "MIT"
