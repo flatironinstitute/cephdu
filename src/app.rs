@@ -211,7 +211,8 @@ impl DirListing {
 
         let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path)?;
 
-        if !fs.map(|f| f.is_ceph()).unwrap_or(false) {
+        // Don't trust dir sizes on non-ceph!
+        if !fs.map(FSType::is_ceph).unwrap_or(false) {
             entries
                 .iter_mut()
                 .filter(|e| e.kind == EntryKind::Dir)
@@ -231,21 +232,21 @@ impl DirListing {
             group: None,
         });
 
-        // let (max_rentries, total_rentries, max_size, total_size) =
-        //     entries
-        //         .iter()
-        //         .fold((0, 0, 0, 0), |(max_r, total_r, max_s, total_s), entry| {
-        //             let r = entry.rentries.unwrap_or(0);
-        //             let s = entry.size.unwrap_or(0);
-        //             (max_r.max(r), total_r + r, max_s.max(s), total_s + s)
-        //         });
         let (max_rentries, max_size) = entries.iter().fold((0, 0), |(max_r, max_s), entry| {
             let r = entry.rentries.unwrap_or(0);
             let s = entry.size.unwrap_or(0);
             (max_r.max(r), max_s.max(s))
         });
+        // Note a possible consistency check we're not using here:
+        // that the sum of the entry sizes add up to the cwd's r-sizes.
         let total_rentries = entry_cwd.rentries.unwrap_or(0);
-        let total_size = entry_cwd.size.unwrap_or(0);
+
+        // TODO: might want to display ? instead of 0 for non-ceph
+        let total_size = if fs.is_some_and(FSType::is_ceph) {
+            entry_cwd.size.unwrap_or(0)
+        } else {
+            0
+        };
 
         let state = ListState::default().with_selected(Some(0));
 
