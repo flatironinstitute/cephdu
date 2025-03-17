@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::{fs, os::unix::fs::MetadataExt};
@@ -18,8 +19,10 @@ pub struct App {
     pub popup: Option<Popup>,
     pub show_owner: bool,
     pub message: Option<Message>,
+    highlighted: HashMap<PathBuf, (String, usize)>,
 }
 
+/// An encapsulation of a list of all files/dirs in a directory.
 pub struct DirListing {
     dotdot: Option<DirEntry>,
     entries: Vec<DirEntry>,
@@ -29,6 +32,7 @@ pub struct DirListing {
     pub fs: Option<FSType>,
 }
 
+/// The size/rentries stats for a directory listing
 pub struct ListingStats {
     pub max_rentries: usize,
     pub total_rentries: usize,
@@ -36,6 +40,7 @@ pub struct ListingStats {
     pub total_size: usize,
 }
 
+/// A single file/dir in the current directory.
 #[derive(Debug, Clone)]
 pub struct DirEntry {
     pub name: String,
@@ -122,6 +127,7 @@ impl App {
             popup: None,
             show_owner: false,
             message: None,
+            highlighted: HashMap::new(),
         };
         app.try_cd(&cwd)?;
         Ok(app)
@@ -138,6 +144,9 @@ impl App {
     }
 
     fn try_cd(&mut self, path: &PathBuf) -> Result<(), std::io::Error> {
+        // Record which entry was highlighted in case we navigate back
+        self.save_selected();
+
         let new = if path.is_absolute() {
             path.canonicalize()?
         } else {
@@ -153,6 +162,9 @@ impl App {
         } else {
             self.message(None);
         }
+
+        // Restore the highlighted entry if we have one
+        self.restore_selected();
         Ok(())
     }
 
@@ -201,6 +213,28 @@ impl App {
                 sort_mode
             },
         )
+    }
+
+    /// Save the currently selected entry in the highlighted map.
+    fn save_selected(&mut self) {
+        let selected = self.dir_listing.selected();
+        if let Some(selected) = selected {
+            let entry = self.dir_listing.get(selected);
+            self.highlighted
+                .insert(self.cwd.clone(), (entry.name.clone(), selected));
+        }
+    }
+
+    /// Restore the previously highlighted entry if it exists.
+    /// Try to select by name, and if that fails, select by index.
+    fn restore_selected(&mut self) {
+        if let Some((name, idx)) = self.highlighted.get(&self.cwd) {
+            if self.dir_listing.select_by_name(name).is_none() {
+                self.dir_listing.saturating_select(*idx);
+            }
+        } else {
+            self.dir_listing.select_first();
+        }
     }
 }
 
@@ -323,7 +357,7 @@ impl DirListing {
     }
 
     pub fn select_next(&mut self, by: usize) {
-        // Normally we would use select_next(), but that has a weird interaction
+        // Normally we would use state.select_next(), but that has a weird interaction
         // with the fact that we're manually rendering the list item highlighting.
         // Specifically, select_next() may scroll off the end of the list, so the
         // highlighting disappears. The state index is corrected after the list is
@@ -349,6 +383,20 @@ impl DirListing {
         }
     }
 
+    /// Select the entry at the given index, or the last entry if the index is out of bounds.
+    pub fn saturating_select(&mut self, idx: usize) -> usize {
+        let len = self.len();
+        let state = &mut self.state;
+        if idx < len {
+            state.select(Some(idx));
+            idx
+        } else {
+            let newidx = len.saturating_sub(1);
+            state.select(Some(newidx));
+            newidx
+        }
+    }
+
     pub fn select_first(&mut self) {
         self.state.select(Some(0));
     }
@@ -358,6 +406,14 @@ impl DirListing {
         if len > 0 {
             self.state.select(Some(len - 1));
         }
+    }
+
+    pub fn select_by_name(&mut self, name: &str) -> Option<usize> {
+        let idx = self.iter_entries().position(|entry| entry.name == name);
+        if let Some(idx) = idx {
+            self.state.select(Some(idx));
+        }
+        idx
     }
 
     pub fn selected(&self) -> Option<usize> {
