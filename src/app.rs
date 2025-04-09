@@ -130,6 +130,10 @@ impl App {
             highlighted: HashMap::new(),
         };
         app.try_cd(&cwd)?;
+
+        // Save the original (resolved) dir
+        app.original_cwd = app.cwd.clone();
+
         Ok(app)
     }
 
