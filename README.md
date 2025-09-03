@@ -2,7 +2,7 @@
 
 A `ncdu`-like TUI for the Ceph File System. Uses the `rbytes` and `rentries` xattrs to display directory sizes and file counts without walking the file system.
 
-[![Build](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml/badge.svg)](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml) [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/flatironinstitute/cephdu/main.svg)](https://results.pre-commit.ci/latest/github/flatironinstitute/cephdu/main)
+[![Build](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml/badge.svg)](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml)
 
 ## Screenshot
 ![screenshot](./cephdu.png)
