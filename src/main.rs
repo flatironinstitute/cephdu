@@ -64,7 +64,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
             if key.kind == event::KeyEventKind::Release {
                 continue;
             }
-            app.handle_key(key.code);
+            app.handle_key(key);
         }
     }
     Ok(())

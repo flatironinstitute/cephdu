@@ -1,4 +1,4 @@
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent};
 
 use std::path::PathBuf;
 
@@ -28,9 +28,9 @@ pub const HELP: &[[&str; 2]] = &[
 ];
 
 impl App {
-    pub fn handle_key(&mut self, key: KeyCode) {
+    pub fn handle_key(&mut self, key: KeyEvent) {
         if self.popup.is_some() {
-            match key {
+            match key.code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
                     self.popup(None, None, None);
                 }
@@ -69,7 +69,7 @@ impl App {
             return;
         }
 
-        match key {
+        match key.code {
             KeyCode::Enter => {
                 if let Some(selected) = self.dir_listing.selected() {
                     let entry = self.dir_listing.get(selected);
