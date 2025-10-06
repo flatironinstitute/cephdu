@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::{fs, os::unix::fs::MetadataExt};
+
+use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
 
 use ratatui::widgets::ListState;
 
@@ -508,15 +511,33 @@ fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
     };
 
     let entry_cwd = get_dent(PathBuf::from(path), fs::metadata(path)?)?;
-    let entries_result: Result<Vec<_>, std::io::Error> = fs::read_dir(path)?
-        .map(|entry_result| -> Result<DirEntry, std::io::Error> {
-            let entry = entry_result?;
-            let path = entry.path();
-            let metadata = entry.metadata()?;
-            get_dent(path, metadata)
-        })
-        .collect();
-    let entries = entries_result?;
+    let dir_iterator = fs::read_dir(path)?;
+    let mut entries: Vec<DirEntry> = Vec::new();
+
+    for entry_result in dir_iterator {
+        if poll(Duration::from_secs(0)).unwrap_or(false) {
+            // If the user presses Ctrl-C during this loop, interrupt.
+            // TODO: this is the wrong way to do this! The whole app should use an
+            // async runtime that can handle key presses and interrupts.
+
+            if let Ok(Event::Key(key)) = event::read()
+                && key.code == KeyCode::Char('c')
+                && key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "Interrupted by user",
+                ));
+            }
+        }
+
+        let entry = entry_result?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        if let Ok(dent) = get_dent(path, metadata) {
+            entries.push(dent);
+        }
+    }
 
     Ok((entry_cwd, entries))
 }
