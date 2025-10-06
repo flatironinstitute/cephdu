@@ -25,6 +25,8 @@ pub const HELP: &[[&str; 2]] = &[
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
     ["r, F5", "Refresh"],
+    ["Ctrl-C", "Interrupt changing the directory"],
+    ["Space", "Go to original directory"],
 ];
 
 impl App {
