@@ -54,6 +54,48 @@ pub struct DirEntry {
     pub group: Option<String>,
 }
 
+impl DirEntry {
+    fn from(path: PathBuf, stat: Metadata) -> Self {
+        let kind = if stat.is_dir() {
+            EntryKind::Dir
+        } else if stat.is_symlink() {
+            EntryKind::Symlink
+        } else {
+            EntryKind::File
+        };
+
+        let name_str = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = if kind == EntryKind::Dir {
+            format!("{}/", name_str)
+        } else {
+            name_str.to_string()
+        };
+
+        let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
+
+        let size = Some(stat.len() as usize);
+
+        let rentries: Option<usize> = if kind == EntryKind::Dir {
+            // rentries seems to include the self-count, which is confusing when there are
+            // only N files but N+1 rentries.
+            get_rentries(&path).map(|r| r.saturating_sub(1))
+        } else {
+            None
+        };
+        let user = Some(name_or_id(stat.uid()));
+        let group = Some(name_or_id(stat.gid()));
+
+        DirEntry {
+            name,
+            kind,
+            size,
+            rentries,
+            user,
+            group,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
     File,
@@ -470,47 +512,7 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
 }
 
 fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
-    let get_dent = |path: PathBuf, stat: Metadata| -> Result<DirEntry, std::io::Error> {
-        let kind = if stat.is_dir() {
-            EntryKind::Dir
-        } else if stat.is_symlink() {
-            EntryKind::Symlink
-        } else {
-            EntryKind::File
-        };
-
-        let name_str = path.file_name().unwrap_or_default().to_string_lossy();
-        let name = if kind == EntryKind::Dir {
-            format!("{}/", name_str)
-        } else {
-            name_str.to_string()
-        };
-
-        let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
-
-        let size = Some(stat.len() as usize);
-
-        let rentries: Option<usize> = if kind == EntryKind::Dir {
-            // rentries seems to include the self-count, which is confusing when there are
-            // only N files but N+1 rentries.
-            get_rentries(&path).map(|r| r.saturating_sub(1))
-        } else {
-            None
-        };
-        let user = Some(name_or_id(stat.uid()));
-        let group = Some(name_or_id(stat.gid()));
-
-        Ok(DirEntry {
-            name,
-            kind,
-            size,
-            rentries,
-            user,
-            group,
-        })
-    };
-
-    let entry_cwd = get_dent(PathBuf::from(path), fs::metadata(path)?)?;
+    let entry_cwd = DirEntry::from(PathBuf::from(path), fs::metadata(path)?);
     let dir_iterator = fs::read_dir(path)?;
     let mut entries: Vec<DirEntry> = Vec::new();
 
@@ -534,9 +536,7 @@ fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
         let entry = entry_result?;
         let path = entry.path();
         let metadata = entry.metadata()?;
-        if let Ok(dent) = get_dent(path, metadata) {
-            entries.push(dent);
-        }
+        entries.push(DirEntry::from(path, metadata));
     }
 
     Ok((entry_cwd, entries))
