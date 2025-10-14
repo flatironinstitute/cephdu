@@ -21,6 +21,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["c, C", "Sort by file count"],
     ["U", "Sort by owner"],
     ["u", "Toggle show owner"],
+    ["t", "Toggle show modified time"],
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
@@ -119,6 +120,9 @@ impl App {
             }
             KeyCode::Char('u') => {
                 self.show_owner = !self.show_owner;
+            }
+            KeyCode::Char('t') => {
+                self.show_mtime = !self.show_mtime;
             }
             KeyCode::Char('r') | KeyCode::F(5) => {
                 self.cd(&self.cwd.clone());

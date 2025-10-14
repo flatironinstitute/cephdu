@@ -2,11 +2,14 @@ use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::time::SystemTime;
 use std::{fs, os::unix::fs::MetadataExt};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
 
 use ratatui::widgets::ListState;
+
+use chrono::{DateTime, Datelike, Local};
 
 use crate::fs::{FSType, get_fs, get_rentries, id_to_name};
 use crate::navigation;
@@ -21,6 +24,7 @@ pub struct App {
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
     pub show_owner: bool,
+    pub show_mtime: bool,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
 }
@@ -52,6 +56,7 @@ pub struct DirEntry {
     pub rentries: Option<usize>,
     pub user: Option<String>,
     pub group: Option<String>,
+    pub mtime: Option<String>,
 }
 
 impl DirEntry {
@@ -85,6 +90,14 @@ impl DirEntry {
         let user = Some(name_or_id(stat.uid()));
         let group = Some(name_or_id(stat.gid()));
 
+        let mtime_: DateTime<Local> = stat.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
+        let mtime_fmt_string = if mtime_.year() == Local::now().year() {
+            "%b %e %H:%M"
+        } else {
+            "%b %e  %Y"
+        };
+        let mtime = Some(mtime_.format(mtime_fmt_string).to_string());
+
         DirEntry {
             name,
             kind,
@@ -92,6 +105,7 @@ impl DirEntry {
             rentries,
             user,
             group,
+            mtime,
         }
     }
 }
@@ -171,6 +185,7 @@ impl App {
             original_cwd,
             popup: None,
             show_owner: false,
+            show_mtime: false,
             message: None,
             highlighted: HashMap::new(),
         };
@@ -313,6 +328,7 @@ impl DirListing {
             rentries: None,
             user: None,
             group: None,
+            mtime: None,
         });
 
         let (max_rentries, max_size) = entries.iter().fold((0, 0), |(max_r, max_s), entry| {

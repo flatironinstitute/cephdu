@@ -88,6 +88,17 @@ impl App {
             (0, 0)
         };
 
+        let mtime_width = if self.show_mtime {
+            self.dir_listing
+                .iter_entries()
+                .filter_map(|e| e.mtime.as_ref())
+                .map(|s| s.len())
+                .max()
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.selected();
         let items: Vec<ListItem> = self
@@ -101,8 +112,10 @@ impl App {
                         &self.dir_listing.stats,
                         user_width,
                         group_width,
+                        mtime_width,
                         selected.map(|s| s == i).unwrap_or(false),
                         self.show_owner,
+                        self.show_mtime,
                     )
                     .fg(TEXT_FG_COLOR)
                     .bg(if selected.map(|s| s == i).unwrap_or(false) {
@@ -199,8 +212,10 @@ impl DirEntry {
         listing_stats: &ListingStats,
         user_width: usize,
         group_width: usize,
+        mtime_width: usize,
         selected: bool,
         show_owner: bool,
+        show_mtime: bool,
     ) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
@@ -269,6 +284,13 @@ impl DirEntry {
                     text_color,
                 )));
             }
+        }
+
+        if show_mtime && let Some(mtime) = &self.mtime {
+            spans.push(style_selected(Span::styled(
+                format!(" {:mwidth$}", mtime, mwidth = mtime_width),
+                text_color,
+            )));
         }
 
         spans.push(style_selected(Span::styled(
