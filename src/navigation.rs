@@ -33,7 +33,11 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
         if self.popup.is_some() {
             match key.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::Char('?') => {
+                KeyCode::Esc
+                | KeyCode::Enter
+                | KeyCode::Char('q')
+                | KeyCode::Char('?')
+                | KeyCode::Char('h') => {
                     self.popup(None, None, None);
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
