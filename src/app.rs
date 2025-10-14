@@ -9,7 +9,7 @@ use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
 
 use ratatui::widgets::ListState;
 
-use chrono::prelude::*;
+use chrono::{DateTime, Datelike, Local};
 
 use crate::fs::{FSType, get_fs, get_rentries, id_to_name};
 use crate::navigation;

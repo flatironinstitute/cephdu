@@ -286,13 +286,11 @@ impl DirEntry {
             }
         }
 
-        if show_mtime {
-            if let Some(mtime) = &self.mtime {
-                spans.push(style_selected(Span::styled(
-                    format!(" {:mwidth$}", mtime, mwidth = mtime_width),
-                    text_color,
-                )));
-            }
+        if show_mtime && let Some(mtime) = &self.mtime {
+            spans.push(style_selected(Span::styled(
+                format!(" {:mwidth$}", mtime, mwidth = mtime_width),
+                text_color,
+            )));
         }
 
         spans.push(style_selected(Span::styled(
