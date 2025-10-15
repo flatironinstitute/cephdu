@@ -21,6 +21,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["c, C", "Sort by file count"],
     ["U", "Sort by owner"],
     ["u", "Toggle show owner"],
+    ["T", "Sort by modified time"],
     ["t", "Toggle show modified time"],
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
@@ -114,6 +115,9 @@ impl App {
             }
             KeyCode::Char('U') => {
                 self.sort_or_reverse(app::SortMode::Normal(app::SortField::Owner))
+            }
+            KeyCode::Char('T') => {
+                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::MTime))
             }
             KeyCode::Char(' ') => {
                 self.cd(&self.original_cwd.clone());
