@@ -1,15 +1,12 @@
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{fs, os::unix::fs::MetadataExt};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
 
 use ratatui::widgets::ListState;
-
-use chrono::{DateTime, Datelike, Local};
 
 use crate::fs::{FSType, get_fs, get_rentries, id_to_name};
 use crate::navigation;
@@ -54,9 +51,9 @@ pub struct DirEntry {
     pub kind: EntryKind,
     pub size: Option<usize>,
     pub rentries: Option<usize>,
+    pub mtime: Option<usize>,
     pub user: Option<String>,
     pub group: Option<String>,
-    pub mtime: Option<String>,
 }
 
 impl DirEntry {
@@ -90,22 +87,22 @@ impl DirEntry {
         let user = Some(name_or_id(stat.uid()));
         let group = Some(name_or_id(stat.gid()));
 
-        let mtime_: DateTime<Local> = stat.modified().unwrap_or(SystemTime::UNIX_EPOCH).into();
-        let mtime_fmt_string = if mtime_.year() == Local::now().year() {
-            "%b %e %H:%M"
-        } else {
-            "%b %e  %Y"
-        };
-        let mtime = Some(mtime_.format(mtime_fmt_string).to_string());
+        let mtime: Option<usize> = Some(
+            stat.modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs() as usize,
+        );
 
         DirEntry {
             name,
             kind,
             size,
             rentries,
+            mtime,
             user,
             group,
-            mtime,
         }
     }
 }
@@ -129,6 +126,7 @@ pub enum SortField {
     Size,
     Rentries,
     Owner,
+    MTime,
 }
 
 impl SortMode {
@@ -326,9 +324,9 @@ impl DirListing {
             kind: EntryKind::Dir,
             size: None,
             rentries: None,
+            mtime: None,
             user: None,
             group: None,
-            mtime: None,
         });
 
         let (max_rentries, max_size) = entries.iter().fold((0, 0), |(max_r, max_s), entry| {
@@ -518,6 +516,7 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
+        SortField::MTime => entries.sort_by(|a, b| a.mtime.cmp(&b.mtime).then(a.size.cmp(&b.size))),
         SortField::Owner => entries.sort_by(|a, b| {
             a.user
                 .cmp(&b.user)
