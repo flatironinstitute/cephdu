@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use std::{fs, os::unix::fs::MetadataExt};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
@@ -21,6 +21,7 @@ pub struct App {
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
     pub show_owner: bool,
+    pub show_mtime: bool,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
 }
@@ -50,6 +51,7 @@ pub struct DirEntry {
     pub kind: EntryKind,
     pub size: Option<usize>,
     pub rentries: Option<usize>,
+    pub mtime: Option<usize>,
     pub user: Option<String>,
     pub group: Option<String>,
 }
@@ -85,11 +87,20 @@ impl DirEntry {
         let user = Some(name_or_id(stat.uid()));
         let group = Some(name_or_id(stat.gid()));
 
+        let mtime: Option<usize> = Some(
+            stat.modified()
+                .unwrap_or(SystemTime::UNIX_EPOCH)
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap_or(Duration::ZERO)
+                .as_secs() as usize,
+        );
+
         DirEntry {
             name,
             kind,
             size,
             rentries,
+            mtime,
             user,
             group,
         }
@@ -115,6 +126,7 @@ pub enum SortField {
     Size,
     Rentries,
     Owner,
+    MTime,
 }
 
 impl SortMode {
@@ -171,6 +183,7 @@ impl App {
             original_cwd,
             popup: None,
             show_owner: false,
+            show_mtime: false,
             message: None,
             highlighted: HashMap::new(),
         };
@@ -311,6 +324,7 @@ impl DirListing {
             kind: EntryKind::Dir,
             size: None,
             rentries: None,
+            mtime: None,
             user: None,
             group: None,
         });
@@ -502,6 +516,7 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
+        SortField::MTime => entries.sort_by(|a, b| a.mtime.cmp(&b.mtime).then(a.size.cmp(&b.size))),
         SortField::Owner => entries.sort_by(|a, b| {
             a.user
                 .cmp(&b.user)
