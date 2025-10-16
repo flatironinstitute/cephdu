@@ -96,6 +96,8 @@ impl App {
 
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.selected();
+        // Get the current year so that we know how to format a time string
+        let current_year = Local::now().year() as isize;
         let items: Vec<ListItem> = self
             .dir_listing
             .iter_entries()
@@ -108,6 +110,7 @@ impl App {
                         user_width,
                         group_width,
                         mtime_width,
+                        current_year,
                         selected.map(|s| s == i).unwrap_or(false),
                         self.show_owner,
                         self.show_mtime,
@@ -209,6 +212,7 @@ impl DirEntry {
         user_width: usize,
         group_width: usize,
         mtime_width: usize,
+        current_year: isize,
         selected: bool,
         show_owner: bool,
         show_mtime: bool,
@@ -287,7 +291,7 @@ impl DirEntry {
                 DateTime::from_timestamp_secs(mtime_seconds.try_into().unwrap_or(0))
                     .unwrap()
                     .into();
-            let fmt = if mtime.year() == Local::now().year() {
+            let fmt = if (mtime.year() as isize) == current_year {
                 "%b %e %H:%M"
             } else {
                 "%b %e  %Y"

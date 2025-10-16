@@ -117,7 +117,7 @@ impl App {
                 self.sort_or_reverse(app::SortMode::Normal(app::SortField::Owner))
             }
             KeyCode::Char('T') => {
-                self.sort_or_reverse(app::SortMode::Normal(app::SortField::MTime))
+                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::MTime))
             }
             KeyCode::Char(' ') => {
                 self.cd(&self.original_cwd.clone());
