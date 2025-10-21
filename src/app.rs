@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use std::{fs, os::unix::fs::MetadataExt};
 
 use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
 
 use ratatui::widgets::ListState;
 
-use crate::fs::{FSType, get_fs, get_rentries, id_to_name};
+use crate::fs::{FSType, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name};
 use crate::navigation;
 use crate::popup::Popup;
 
@@ -21,7 +21,7 @@ pub struct App {
     pub original_cwd: PathBuf,
     pub popup: Option<Popup>,
     pub show_owner: bool,
-    pub show_mtime: bool,
+    pub show_ctime: bool,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
 }
@@ -51,7 +51,7 @@ pub struct DirEntry {
     pub kind: EntryKind,
     pub size: Option<usize>,
     pub rentries: Option<usize>,
-    pub mtime: Option<usize>,
+    pub ctime: Option<usize>,
     pub user: Option<String>,
     pub group: Option<String>,
 }
@@ -66,6 +66,27 @@ impl DirEntry {
             EntryKind::File
         };
 
+        // we want to do our xattr calls asap to try and take advantage of MDS caching
+        let rentries: Option<usize> = if kind == EntryKind::Dir {
+            // rentries seems to include the self-count, which is confusing when there are
+            // only N files but N+1 rentries.
+            get_rentries(&path).map(|r| r.saturating_sub(1))
+        } else {
+            None
+        };
+
+        let size: Option<usize> = if kind == EntryKind::Dir {
+            get_rbytes(&path)
+        } else {
+            Some(stat.len() as usize)
+        };
+
+        let ctime: Option<usize> = if kind == EntryKind::Dir {
+            get_rctime(&path)
+        } else {
+            Some(stat.ctime() as usize)
+        };
+
         let name_str = path.file_name().unwrap_or_default().to_string_lossy();
         let name = if kind == EntryKind::Dir {
             format!("{}/", name_str)
@@ -75,32 +96,15 @@ impl DirEntry {
 
         let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
 
-        let size = Some(stat.len() as usize);
-
-        let rentries: Option<usize> = if kind == EntryKind::Dir {
-            // rentries seems to include the self-count, which is confusing when there are
-            // only N files but N+1 rentries.
-            get_rentries(&path).map(|r| r.saturating_sub(1))
-        } else {
-            None
-        };
         let user = Some(name_or_id(stat.uid()));
         let group = Some(name_or_id(stat.gid()));
-
-        let mtime: Option<usize> = Some(
-            stat.modified()
-                .unwrap_or(SystemTime::UNIX_EPOCH)
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap_or(Duration::ZERO)
-                .as_secs() as usize,
-        );
 
         DirEntry {
             name,
             kind,
             size,
             rentries,
-            mtime,
+            ctime,
             user,
             group,
         }
@@ -126,7 +130,7 @@ pub enum SortField {
     Size,
     Rentries,
     Owner,
-    MTime,
+    CTime,
 }
 
 impl SortMode {
@@ -183,7 +187,7 @@ impl App {
             original_cwd,
             popup: None,
             show_owner: false,
-            show_mtime: false,
+            show_ctime: false,
             message: None,
             highlighted: HashMap::new(),
         };
@@ -324,7 +328,7 @@ impl DirListing {
             kind: EntryKind::Dir,
             size: None,
             rentries: None,
-            mtime: None,
+            ctime: None,
             user: None,
             group: None,
         });
@@ -516,7 +520,7 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
         SortField::Rentries => {
             entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
         }
-        SortField::MTime => entries.sort_by(|a, b| a.mtime.cmp(&b.mtime).then(a.size.cmp(&b.size))),
+        SortField::CTime => entries.sort_by(|a, b| a.ctime.cmp(&b.ctime).then(a.size.cmp(&b.size))),
         SortField::Owner => entries.sort_by(|a, b| {
             a.user
                 .cmp(&b.user)

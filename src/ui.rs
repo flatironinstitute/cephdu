@@ -45,7 +45,7 @@ pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
 // This should be constant: 'Jan  1  2000' or 'Dec 31 12:34'
-const MTIME_FMT_WIDTH: usize = 12;
+const CTIME_FMT_WIDTH: usize = 12;
 
 impl App {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
@@ -92,7 +92,7 @@ impl App {
             (0, 0)
         };
 
-        let mtime_width = if self.show_mtime { MTIME_FMT_WIDTH } else { 0 };
+        let ctime_width = if self.show_ctime { CTIME_FMT_WIDTH } else { 0 };
 
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.selected();
@@ -109,11 +109,11 @@ impl App {
                         &self.dir_listing.stats,
                         user_width,
                         group_width,
-                        mtime_width,
+                        ctime_width,
                         current_year,
                         selected.map(|s| s == i).unwrap_or(false),
                         self.show_owner,
-                        self.show_mtime,
+                        self.show_ctime,
                     )
                     .fg(TEXT_FG_COLOR)
                     .bg(if selected.map(|s| s == i).unwrap_or(false) {
@@ -211,11 +211,11 @@ impl DirEntry {
         listing_stats: &ListingStats,
         user_width: usize,
         group_width: usize,
-        mtime_width: usize,
+        ctime_width: usize,
         current_year: isize,
         selected: bool,
         show_owner: bool,
-        show_mtime: bool,
+        show_ctime: bool,
     ) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
@@ -286,21 +286,21 @@ impl DirEntry {
             }
         }
 
-        if show_mtime && let Some(mtime_seconds) = self.mtime {
-            let mtime: DateTime<Local> =
-                DateTime::from_timestamp_secs(mtime_seconds.try_into().unwrap_or(0))
+        if show_ctime && let Some(ctime_seconds) = self.ctime {
+            let ctime: DateTime<Local> =
+                DateTime::from_timestamp_secs(ctime_seconds.try_into().unwrap_or(0))
                     .unwrap()
                     .into();
-            let fmt = if (mtime.year() as isize) == current_year {
+            let fmt = if (ctime.year() as isize) == current_year {
                 "%b %e %H:%M"
             } else {
                 "%b %e  %Y"
             };
             spans.push(style_selected(Span::styled(
                 format!(
-                    " {:mwidth$}",
-                    mtime.format(fmt).to_string(),
-                    mwidth = mtime_width
+                    " {:cwidth$}",
+                    ctime.format(fmt).to_string(),
+                    cwidth = ctime_width
                 ),
                 text_color,
             )));
