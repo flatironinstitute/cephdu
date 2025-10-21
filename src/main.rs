@@ -18,6 +18,15 @@ const DEFAULT_DIR: Option<&str> = option_env!("CEPHDU_DEFAULT_DIR");
 
 /// Display ceph space and file count (inode) usage in an interactive terminal
 #[derive(Parser)]
+#[clap(after_help = r#"
+Note the following differences from 'ls -l':
+  * The time shown is recursive for directories
+  * The time shown is the time at which a file's contents *or* its metadata
+    have been modified (ctime). This is subtly different from 'ls -l', where
+    the timestamp only changes if the contents are modified (mtime)
+  * The size shown is recursive for directories (may also be true for
+    'ls -l' depending on ceph deployment)
+"#)]
 struct Cli {
     /// Path to the directory to display
     path: Option<std::path::PathBuf>,
