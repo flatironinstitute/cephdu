@@ -14,6 +14,8 @@ use ratatui::{
     },
 };
 
+use chrono::{DateTime, Datelike, Local};
+
 use crate::app::App;
 use crate::app::DirEntry;
 use crate::app::EntryKind;
@@ -42,6 +44,8 @@ const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
+// This should be constant: 'Jan  1  2000' or 'Dec 31 12:34'
+const CTIME_FMT_WIDTH: usize = 12;
 
 impl App {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
@@ -88,8 +92,12 @@ impl App {
             (0, 0)
         };
 
+        let ctime_width = if self.show_ctime { CTIME_FMT_WIDTH } else { 0 };
+
         // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.selected();
+        // Get the current year so that we know how to format a time string
+        let current_year = Local::now().year() as isize;
         let items: Vec<ListItem> = self
             .dir_listing
             .iter_entries()
@@ -101,8 +109,11 @@ impl App {
                         &self.dir_listing.stats,
                         user_width,
                         group_width,
+                        ctime_width,
+                        current_year,
                         selected.map(|s| s == i).unwrap_or(false),
                         self.show_owner,
+                        self.show_ctime,
                     )
                     .fg(TEXT_FG_COLOR)
                     .bg(if selected.map(|s| s == i).unwrap_or(false) {
@@ -193,14 +204,18 @@ fn safe_div(a: usize, b: usize) -> f64 {
 }
 
 impl DirEntry {
+    #[allow(clippy::too_many_arguments)]
     fn to_listitem(
         &self,
         gauge_width: usize,
         listing_stats: &ListingStats,
         user_width: usize,
         group_width: usize,
+        ctime_width: usize,
+        current_year: isize,
         selected: bool,
         show_owner: bool,
+        show_ctime: bool,
     ) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
@@ -269,6 +284,26 @@ impl DirEntry {
                     text_color,
                 )));
             }
+        }
+
+        if show_ctime && let Some(ctime_seconds) = self.ctime {
+            let ctime: DateTime<Local> =
+                DateTime::from_timestamp_secs(ctime_seconds.try_into().unwrap_or(0))
+                    .unwrap()
+                    .into();
+            let fmt = if (ctime.year() as isize) == current_year {
+                "%b %e %H:%M"
+            } else {
+                "%b %e  %Y"
+            };
+            spans.push(style_selected(Span::styled(
+                format!(
+                    " {:cwidth$}",
+                    ctime.format(fmt).to_string(),
+                    cwidth = ctime_width
+                ),
+                text_color,
+            )));
         }
 
         spans.push(style_selected(Span::styled(

@@ -5,9 +5,13 @@ use std::path::Path;
 
 use lazy_static::lazy_static;
 
+const DIR_RBYTES_ATTR: &str = "ceph.dir.rbytes";
+const DIR_RCTIME_ATTR: &str = "ceph.dir.rctime";
 const DIR_RENTRIES_ATTR: &str = "ceph.dir.rentries";
 
 lazy_static! {
+    static ref DIR_RBYTES_ATTR_C: CString = CString::new(DIR_RBYTES_ATTR).unwrap();
+    static ref DIR_RCTIME_ATTR_C: CString = CString::new(DIR_RCTIME_ATTR).unwrap();
     static ref DIR_RENTRIES_ATTR_C: CString = CString::new(DIR_RENTRIES_ATTR).unwrap();
 }
 
@@ -101,18 +105,12 @@ pub fn get_fs(path: &Path) -> Option<FSType> {
     })
 }
 
-pub fn get_rentries(path: &Path) -> Option<usize> {
+fn get_xattr(path: &Path, attr: &CString) -> Option<String> {
     // First query the size of the attribute, then fetch it.
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
 
-    let attr_size = unsafe {
-        libc::lgetxattr(
-            c_path.as_ptr(),
-            DIR_RENTRIES_ATTR_C.as_ptr(),
-            std::ptr::null_mut(),
-            0,
-        )
-    };
+    let attr_size =
+        unsafe { libc::lgetxattr(c_path.as_ptr(), attr.as_ptr(), std::ptr::null_mut(), 0) };
 
     if attr_size < 0 {
         return None;
@@ -123,7 +121,7 @@ pub fn get_rentries(path: &Path) -> Option<usize> {
         buf.set_len(attr_size as usize);
         libc::lgetxattr(
             c_path.as_ptr(),
-            DIR_RENTRIES_ATTR_C.as_ptr(),
+            attr.as_ptr(),
             buf.as_mut_ptr() as *mut libc::c_void,
             attr_size as libc::size_t,
         )
@@ -131,9 +129,26 @@ pub fn get_rentries(path: &Path) -> Option<usize> {
     if attr_size2 < 0 {
         return None;
     }
+    Some(String::from_utf8_lossy(&buf).to_string())
+}
 
-    // rentries is a string, so we need to convert it to a number.
-    let rentries = String::from_utf8_lossy(&buf);
+pub fn get_rentries(path: &Path) -> Option<usize> {
+    let rentries = get_xattr(path, &DIR_RENTRIES_ATTR_C)?;
+    // convert rentries xattr from string to unsigned
     let rentries = rentries.trim().parse::<usize>().ok()?;
     Some(rentries)
+}
+
+pub fn get_rbytes(path: &Path) -> Option<usize> {
+    let rbytes = get_xattr(path, &DIR_RBYTES_ATTR_C)?;
+    // convert rbytes xattr from string to unsigned
+    let rbytes = rbytes.trim().parse::<usize>().ok()?;
+    Some(rbytes)
+}
+
+pub fn get_rctime(path: &Path) -> Option<usize> {
+    let rctime = get_xattr(path, &DIR_RCTIME_ATTR_C)?;
+    // convert rctime xattr from string ("seconds.nanos") to unsigned
+    let rctime = rctime.trim().split(".").next()?.parse::<usize>().ok()?;
+    Some(rctime)
 }
