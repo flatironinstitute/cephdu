@@ -5,7 +5,7 @@ A `ncdu`-like TUI for the Ceph File System. Uses the `rbytes` and `rentries` xat
 [![Build](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml/badge.svg)](https://github.com/flatironinstitute/cephdu/actions/workflows/rust.yml)
 
 ## Screenshot
-![screenshot](./cephdu.png)
+![screenshot](./cephdu.png) [![Built With Ratatui](https://ratatui.rs/built-with-ratatui/badge.svg)](https://ratatui.rs/)
 
 ## Background
 
