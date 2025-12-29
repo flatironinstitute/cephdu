@@ -322,7 +322,7 @@ impl DirListing {
         }
         sort(&mut entries, sort_mode);
 
-        let has_parent = path != "/";
+        let has_parent = *path != *"/";
         let dotdot = has_parent.then(|| DirEntry {
             name: "..".to_string(),
             kind: EntryKind::Dir,
