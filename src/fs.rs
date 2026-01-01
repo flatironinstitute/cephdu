@@ -5,6 +5,7 @@ use std::path::Path;
 
 use lazy_static::lazy_static;
 
+const ATTR_BUF_SIZE: usize = 64;
 const DIR_RBYTES_ATTR: &str = "ceph.dir.rbytes";
 const DIR_RCTIME_ATTR: &str = "ceph.dir.rctime";
 const DIR_RENTRIES_ATTR: &str = "ceph.dir.rentries";
@@ -106,30 +107,23 @@ pub fn get_fs(path: &Path) -> Option<FSType> {
 }
 
 fn get_xattr(path: &Path, attr: &CString) -> Option<String> {
-    // First query the size of the attribute, then fetch it.
+    /* Allocate an oversized buffer so that we can halve the number of
+     * getxattr(2) calls */
     let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
 
-    let attr_size =
-        unsafe { libc::lgetxattr(c_path.as_ptr(), attr.as_ptr(), std::ptr::null_mut(), 0) };
-
-    if attr_size < 0 {
-        return None;
-    }
-
-    let mut buf = Vec::<u8>::with_capacity(attr_size as usize);
-    let attr_size2 = unsafe {
-        buf.set_len(attr_size as usize);
+    let mut buf = [0u8; ATTR_BUF_SIZE];
+    let bytes_read = unsafe {
         libc::lgetxattr(
             c_path.as_ptr(),
             attr.as_ptr(),
             buf.as_mut_ptr() as *mut libc::c_void,
-            attr_size as libc::size_t,
+            ATTR_BUF_SIZE as libc::size_t,
         )
     };
-    if attr_size2 < 0 {
+    if bytes_read < 0 {
         return None;
     }
-    Some(String::from_utf8_lossy(&buf).to_string())
+    Some(String::from_utf8_lossy(&buf[..(bytes_read as usize)]).to_string())
 }
 
 pub fn get_rentries(path: &Path) -> Option<usize> {
