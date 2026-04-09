@@ -56,6 +56,10 @@ Options:
   -h, --help  Print help
 ```
 
+## Availability on Flatiron Institute Clusters
+
+`cephdu` is available under the `fi-utils` module on the Flatiron Institute clusters, rusty and popeye, and is the preferred way to look at disk usage on ceph.
+
 ## License
 MIT
 
