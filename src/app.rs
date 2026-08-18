@@ -299,7 +299,7 @@ impl App {
                 self.dir_listing.saturating_select(*idx);
             }
         } else {
-            self.dir_listing.select_first();
+            self.dir_listing.select_first_entry();
         }
     }
 }
@@ -466,6 +466,18 @@ impl DirListing {
 
     pub fn select_first(&mut self) {
         self.state.select(Some(0));
+    }
+
+    /// Select the first entry that isn't "..", which is what a directory being
+    /// entered should land on. Falls back to ".." when there is nothing else.
+    pub fn select_first_entry(&mut self) {
+        let dotdot_only = self.entries.is_empty();
+        let first = if self.dotdot.is_some() && !dotdot_only {
+            1
+        } else {
+            0
+        };
+        self.state.select(Some(first));
     }
 
     pub fn select_last(&mut self) {
