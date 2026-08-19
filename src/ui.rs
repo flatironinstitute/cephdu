@@ -429,7 +429,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, DEFAULT_SORT_MODE, DirListing, EntryKind};
+    use crate::app::{App, DEFAULT_SORT_MODE, DirListing, EntryKind, SortField};
     use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -456,7 +456,7 @@ mod tests {
     /// filesystem the tests happen to run on. The cwd is faked for the same reason;
     /// App::new only needs a readable directory to start from.
     fn app() -> App {
-        let mut app = App::new(Some(&PathBuf::from("."))).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE).unwrap();
         app.cwd = PathBuf::from("/ceph/users/alice");
         app.dir_listing = DirListing::from_entries(entries(), true, DEFAULT_SORT_MODE);
         app.message(None);
@@ -581,7 +581,9 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('s')));
         assert_eq!(names(&mut app), ["c.dat", "b/", "a/"]);
 
+        // The key and the -n flag resolve to the same mode.
         app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(app.dir_listing.sort_mode(), SortField::Name.default_mode());
         assert_eq!(names(&mut app), ["a/", "b/", "c.dat"]);
     }
 

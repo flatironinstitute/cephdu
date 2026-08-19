@@ -12,7 +12,7 @@ use crate::fs::{FSType, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name
 use crate::navigation;
 use crate::popup::Popup;
 
-pub const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
+pub const DEFAULT_SORT_MODE: SortMode = SortField::Size.default_mode();
 
 pub struct App {
     pub should_exit: bool,
@@ -133,6 +133,17 @@ pub enum SortField {
     CTime,
 }
 
+impl SortField {
+    /// The direction a field starts in when it is first chosen, by key or by flag.
+    /// Sizes, counts and times read most-first; names and owners read ascending.
+    pub const fn default_mode(self) -> SortMode {
+        match self {
+            SortField::Name | SortField::Owner => SortMode::Normal(self),
+            SortField::Size | SortField::Rentries | SortField::CTime => SortMode::Reversed(self),
+        }
+    }
+}
+
 impl SortMode {
     pub fn field(&self) -> &SortField {
         match self {
@@ -171,14 +182,14 @@ pub enum MessageKind {
 }
 
 impl App {
-    pub fn new(cwd: Option<&PathBuf>) -> Result<App, std::io::Error> {
+    pub fn new(cwd: Option<&PathBuf>, sort_mode: SortMode) -> Result<App, std::io::Error> {
         let cwd: PathBuf = if let Some(cwd) = cwd {
             cwd.clone()
         } else {
             std::env::current_dir()?
         };
 
-        let dir_listing = DirListing::default();
+        let dir_listing = DirListing::empty(sort_mode);
         let original_cwd = cwd.clone();
         let mut app = App {
             should_exit: false,
@@ -380,12 +391,12 @@ impl DirListing {
         }
     }
 
-    fn default() -> DirListing {
+    fn empty(sort_mode: SortMode) -> DirListing {
         DirListing {
             dotdot: None,
             entries: Vec::new(),
             state: ListState::default(),
-            sort_mode: DEFAULT_SORT_MODE,
+            sort_mode,
             stats: ListingStats {
                 max_rentries: 0,
                 total_rentries: 0,
@@ -794,7 +805,7 @@ mod tests {
     /// highlighted there. Uses the crate's own tree, which cargo makes the cwd.
     #[test]
     fn cd_selects_the_first_real_entry_then_remembers() {
-        let mut app = App::new(Some(&PathBuf::from("."))).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE).unwrap();
         assert_eq!(app.dir_listing.selected(), Some(1));
         assert_ne!(app.dir_listing.get(1).name, "..");
 
@@ -807,6 +818,52 @@ mod tests {
         app.cd(&PathBuf::from(".."));
         let selected = app.dir_listing.selected().unwrap();
         assert_eq!(app.dir_listing.get(selected).name, "src/");
+    }
+
+    /// The sort keys and the CLI sort flags share these directions, so they cannot
+    /// drift apart.
+    #[test]
+    fn sort_fields_have_natural_directions() {
+        for field in [SortField::Name, SortField::Owner] {
+            assert!(
+                !field.default_mode().is_reversed(),
+                "{:?} should read ascending",
+                field
+            );
+        }
+        for field in [SortField::Size, SortField::Rentries, SortField::CTime] {
+            assert!(
+                field.default_mode().is_reversed(),
+                "{:?} should read most-first",
+                field
+            );
+        }
+        for field in [
+            SortField::Name,
+            SortField::Size,
+            SortField::Rentries,
+            SortField::Owner,
+            SortField::CTime,
+        ] {
+            assert_eq!(*field.default_mode().field(), field);
+        }
+    }
+
+    /// A startup sort mode has to reach the listing App::new builds.
+    #[test]
+    fn new_honors_the_startup_sort_mode() {
+        let mode = SortMode::Normal(SortField::Name);
+        let app = App::new(Some(&PathBuf::from(".")), mode).unwrap();
+        assert_eq!(app.dir_listing.sort_mode(), mode);
+
+        let names: Vec<String> = app
+            .dir_listing
+            .iter_entries_sorted()
+            .map(|e| e.name.clone())
+            .collect();
+        let mut ascending = names.clone();
+        ascending.sort();
+        assert_eq!(names, ascending, "listing is not in name order");
     }
 
     /// Names break ties so that the listing doesn't depend on readdir order.

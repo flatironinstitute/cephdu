@@ -16,7 +16,11 @@ mod navigation;
 mod popup;
 mod ui;
 
-use crate::{app::App, flat::Format, ui::ui};
+use crate::{
+    app::{App, SortField, SortMode},
+    flat::Format,
+    ui::ui,
+};
 
 const DEFAULT_DIR: Option<&str> = option_env!("CEPHDU_DEFAULT_DIR");
 
@@ -30,6 +34,10 @@ Flat listings have one row per entry: size, file count, modified time, user,
 group, name, with '-' for values the filesystem does not provide. --flat writes
 them with units for reading; --parseable writes raw tab-separated values in a
 format that does not vary with the terminal.
+
+Listings are sorted largest first unless one of the sort flags is given. Those
+mirror the interface's sort keys, and apply to both output modes. -r reverses
+whichever order is in effect, so 'cephdu -r' reads smallest first.
 
 Note the following differences from 'ls -l':
   * The time shown is recursive for directories
@@ -54,6 +62,59 @@ struct Cli {
     /// Use the interactive interface even if stdout is not a terminal
     #[arg(long, conflicts_with_all = ["flat", "parseable"])]
     tui: bool,
+
+    #[command(flatten)]
+    sort: SortFlags,
+
+    /// Reverse the sort order
+    #[arg(short, long)]
+    reverse: bool,
+}
+
+/// The startup sort order, mirroring the interface's sort keys. Each field starts
+/// in the direction `SortField::default_mode` gives it, so `-s` reads largest
+/// first, and the interface's usual keys still reverse it from there.
+#[derive(clap::Args)]
+#[group(multiple = false)]
+struct SortFlags {
+    /// Sort by name
+    #[arg(short, long)]
+    name: bool,
+
+    /// Sort by size
+    #[arg(short, long)]
+    size: bool,
+
+    /// Sort by file count
+    #[arg(short, long)]
+    count: bool,
+
+    /// Sort by owner
+    #[arg(short = 'u', long)]
+    owner: bool,
+
+    /// Sort by modification time
+    #[arg(short, long)]
+    time: bool,
+}
+
+impl SortFlags {
+    fn mode(&self) -> SortMode {
+        let field = if self.name {
+            SortField::Name
+        } else if self.size {
+            SortField::Size
+        } else if self.count {
+            SortField::Rentries
+        } else if self.owner {
+            SortField::Owner
+        } else if self.time {
+            SortField::CTime
+        } else {
+            return app::DEFAULT_SORT_MODE;
+        };
+        field.default_mode()
+    }
 }
 
 fn main() -> Result<()> {
@@ -62,6 +123,11 @@ fn main() -> Result<()> {
     let path_was_explicit = args.path.is_some();
 
     let path: PathBuf = args.path.clone().unwrap_or_else(default_dir);
+    let sort_mode = if args.reverse {
+        args.sort.mode().as_reversed()
+    } else {
+        args.sort.mode()
+    };
 
     // The interactive interface draws to stdout, so it can only work on a terminal.
     // Whatever is reading a pipe or a file is more often a program than a person,
@@ -77,11 +143,11 @@ fn main() -> Result<()> {
         None
     };
     if let Some(format) = format {
-        return run_flat(&path, &format);
+        return run_flat(&path, &format, sort_mode);
     }
 
-    let mut app = App::new(Some(&path)).unwrap_or_else(|e| {
-        let mut app = App::new(Some(&PathBuf::from("."))).unwrap_or_else(|_| {
+    let mut app = App::new(Some(&path), sort_mode).unwrap_or_else(|e| {
+        let mut app = App::new(Some(&PathBuf::from(".")), sort_mode).unwrap_or_else(|_| {
             eprintln!("Error opening {:?}: {}", path, e);
             std::process::exit(1);
         });
@@ -109,8 +175,8 @@ fn main() -> Result<()> {
 /// Print a flat listing of `path`. Unlike the interactive interface, this doesn't
 /// fall back to the current directory on failure: a script needs to see the error
 /// rather than a listing of somewhere else.
-fn run_flat(path: &Path, format: &Format) -> Result<()> {
-    let listing = app::DirListing::from(path, app::DEFAULT_SORT_MODE).unwrap_or_else(|e| {
+fn run_flat(path: &Path, format: &Format, sort_mode: SortMode) -> Result<()> {
+    let listing = app::DirListing::from(path, sort_mode).unwrap_or_else(|e| {
         eprintln!("Error opening {:?}: {}", path, e);
         std::process::exit(1);
     });

@@ -110,19 +110,13 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.should_exit = true;
             }
-            KeyCode::Char('n') => self.sort_or_reverse(app::SortMode::Normal(app::SortField::Name)),
-            KeyCode::Char('s') => {
-                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::Size))
-            }
+            KeyCode::Char('n') => self.sort_or_reverse(app::SortField::Name.default_mode()),
+            KeyCode::Char('s') => self.sort_or_reverse(app::SortField::Size.default_mode()),
             KeyCode::Char('c') | KeyCode::Char('C') => {
-                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::Rentries))
+                self.sort_or_reverse(app::SortField::Rentries.default_mode())
             }
-            KeyCode::Char('U') => {
-                self.sort_or_reverse(app::SortMode::Normal(app::SortField::Owner))
-            }
-            KeyCode::Char('T') => {
-                self.sort_or_reverse(app::SortMode::Reversed(app::SortField::CTime))
-            }
+            KeyCode::Char('U') => self.sort_or_reverse(app::SortField::Owner.default_mode()),
+            KeyCode::Char('T') => self.sort_or_reverse(app::SortField::CTime.default_mode()),
             KeyCode::Char(' ') => {
                 self.cd(&self.original_cwd.clone());
             }
