@@ -14,7 +14,7 @@ use ratatui::{
     },
 };
 
-use chrono::{DateTime, Datelike, Local};
+use chrono::{Datelike, Local};
 
 use crate::app::App;
 use crate::app::DirEntry;
@@ -22,6 +22,7 @@ use crate::app::EntryKind;
 use crate::app::ListingStats;
 use crate::app::Message;
 use crate::app::MessageKind;
+use crate::format::{CTIME_FMT_WIDTH, ctime_str, rentries_str, size_str};
 use crate::popup::Popup;
 
 const SELECTED_BG_COLOR: Color = SLATE.c700;
@@ -44,8 +45,6 @@ const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
-// This should be constant: 'Jan  1  2000' or 'Dec 31 12:34'
-const CTIME_FMT_WIDTH: usize = 12;
 
 impl App {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
@@ -287,19 +286,10 @@ impl DirEntry {
         }
 
         if show_ctime && let Some(ctime_seconds) = self.ctime {
-            let ctime: DateTime<Local> =
-                DateTime::from_timestamp_secs(ctime_seconds.try_into().unwrap_or(0))
-                    .unwrap()
-                    .into();
-            let fmt = if (ctime.year() as isize) == current_year {
-                "%b %e %H:%M"
-            } else {
-                "%b %e  %Y"
-            };
             spans.push(style_selected(Span::styled(
                 format!(
                     " {:cwidth$}",
-                    ctime.format(fmt).to_string(),
+                    ctime_str(ctime_seconds, current_year),
                     cwidth = ctime_width
                 ),
                 text_color,
@@ -386,51 +376,6 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
     spans.push(subgauge(remaining_filled, remaining_width));
 
     spans
-}
-
-fn size_str(size: Option<usize>, align: bool) -> String {
-    if size.is_none() {
-        return "".to_string();
-    }
-    let size = size.unwrap();
-    let units = [" B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-    let base: usize = 1000;
-    let i = if size > 0 {
-        size.ilog10() / base.ilog10()
-    } else {
-        0
-    };
-    let size = size as f64 / base.pow(i) as f64;
-    if i == 0 {
-        format!(
-            "{:.0}{}{}",
-            size,
-            if align { "  " } else { "" },
-            units[i as usize]
-        )
-    } else {
-        format!("{:.1} {}", size, units[i as usize])
-    }
-}
-
-fn rentries_str(rentries: Option<usize>, align: bool) -> String {
-    if rentries.is_none() {
-        return "".to_string();
-    }
-    let rentries = rentries.unwrap();
-    let units = ["", "K", "M", "G", "T", "P", "E", "Z", "Y"];
-    let base: usize = 1000;
-    let i = if rentries > 0 {
-        rentries.ilog10() / base.ilog10()
-    } else {
-        0
-    };
-    let rentries = rentries as f64 / base.pow(i) as f64;
-    if i == 0 {
-        format!("{:.0}{}", rentries, if align { "    " } else { "" })
-    } else {
-        format!("{:.1} {}", rentries, units[i as usize])
-    }
 }
 
 fn popup_rects(xsize: u16, ysize: u16, r: Rect) -> [Rect; 2] {
