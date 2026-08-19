@@ -305,7 +305,7 @@ impl App {
 }
 
 impl DirListing {
-    fn from(path: &Path, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
+    pub fn from(path: &Path, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
@@ -396,19 +396,22 @@ impl DirListing {
         }
     }
 
-    pub fn iter_entries(&self) -> impl Iterator<Item = &DirEntry> {
-        // Display ".." first if we have it, then the rest of the entries,
-        // maybe in reverse order.
-
-        let dotdot = self.dotdot.iter();
-
+    /// Iterate the real entries in display order, without "..".
+    pub fn iter_entries_sorted(&self) -> impl Iterator<Item = &DirEntry> {
+        // `entries` is always sorted ascending; reversed modes are applied here
+        // rather than by re-sorting.
         let entries_iter: Box<dyn Iterator<Item = &DirEntry>> = if self.sort_mode.is_reversed() {
             Box::new(self.entries.iter().rev())
         } else {
             Box::new(self.entries.iter())
         };
 
-        dotdot.chain(entries_iter)
+        entries_iter
+    }
+
+    /// Iterate the entries as displayed: ".." first if we have it, then the rest.
+    pub fn iter_entries(&self) -> impl Iterator<Item = &DirEntry> {
+        self.dotdot.iter().chain(self.iter_entries_sorted())
     }
 
     pub fn get(&self, idx: usize) -> &DirEntry {
@@ -686,6 +689,7 @@ mod tests {
             let listing = listing(true, sort_mode);
             assert_eq!(displayed(&listing)[0], "..");
             assert_eq!(listing.len(), 4);
+            assert_eq!(listing.iter_entries_sorted().count(), 3);
         }
     }
 
