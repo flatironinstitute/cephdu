@@ -425,3 +425,192 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
         render_popup(popup, popup_areas, frame.buffer_mut());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, DEFAULT_SORT_MODE, DirListing, EntryKind};
+    use crossterm::event::{KeyCode, KeyEvent};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
+
+    fn entries() -> Vec<DirEntry> {
+        let entry = |name: &str, kind, size, rentries| DirEntry {
+            name: name.to_string(),
+            kind,
+            size: Some(size),
+            rentries,
+            ctime: Some(992_606_400),
+            user: Some("alice".to_string()),
+            group: Some("scc".to_string()),
+        };
+        vec![
+            entry("a/", EntryKind::Dir, 800_000_000_000, Some(60_000)),
+            entry("b/", EntryKind::Dir, 200_000_000_000, Some(40_000)),
+            entry("c.dat", EntryKind::File, 1_000_000, None),
+        ]
+    }
+
+    /// An app whose listing is synthetic, so the frame doesn't depend on the
+    /// filesystem the tests happen to run on. The cwd is faked for the same reason;
+    /// App::new only needs a readable directory to start from.
+    fn app() -> App {
+        let mut app = App::new(Some(&PathBuf::from("."))).unwrap();
+        app.cwd = PathBuf::from("/ceph/users/alice");
+        app.dir_listing = DirListing::from_entries(entries(), true, DEFAULT_SORT_MODE);
+        app.message(None);
+        app
+    }
+
+    fn frame(app: &mut App) -> Vec<String> {
+        frame_sized(app, 80, 10)
+    }
+
+    fn frame_sized(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| ui(f, app)).unwrap();
+        let buf = terminal.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Everything below the header, which carries the version number.
+    const EXPECTED: &[&str] = &[
+        "",
+        "┏ /ceph/users/alice ━━ 1.0 TB, 100.0 K files ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+        "┃>          ┃                    ┃          ┃                    ┃ ..          ┃",
+        "┃  800.0 GB ┃███████ 80.0%███████┃   60.0 K ┃███████ 60.0%███████┃ a/          ┃",
+        "┃  200.0 GB ┃█████   20.0%       ┃   40.0 K ┃███████ 40.0%▍      ┃ b/          ┃",
+        "┃    1.0 MB ┃         0.0%       ┃          ┃                    ┃ c.dat       ┃",
+        "┃                                                                              ┃",
+        "┃                                                                              ┃",
+        "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Press ? for help ┛",
+    ];
+
+    #[test]
+    fn renders_the_listing() {
+        let lines = frame(&mut app());
+
+        assert!(lines[0].contains("cephdu v"), "{:?}", lines[0]);
+        assert_eq!(&lines[1..], EXPECTED, "\n{}", lines.join("\n"));
+    }
+
+    /// The row the cursor is on is filled manually rather than by ratatui's
+    /// highlight style, so the fill is worth checking directly.
+    #[test]
+    fn highlights_the_selected_row() {
+        let mut app = app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Row 2 is "..", the initial selection; row 3 is the first real entry.
+        assert_eq!(buf[(5, 3)].bg, SELECTED_BG_COLOR);
+        assert_eq!(buf[(5, 4)].bg, LIST_BG_COLOR);
+    }
+
+    #[test]
+    fn moving_the_cursor_moves_the_marker() {
+        let mut app = app();
+        assert!(frame(&mut app)[3].starts_with("┃>"));
+
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+        let lines = frame(&mut app);
+        assert!(lines[3].starts_with("┃ "), "{:?}", lines[3]);
+        assert!(lines[4].starts_with("┃>"), "{:?}", lines[4]);
+        assert!(lines[4].contains("a/"), "{:?}", lines[4]);
+
+        // The cursor must stop at the top rather than wrapping.
+        app.handle_key(KeyEvent::from(KeyCode::Up));
+        app.handle_key(KeyEvent::from(KeyCode::Up));
+        assert!(frame(&mut app)[3].starts_with("┃>"));
+    }
+
+    /// Wide enough that both optional columns fit; at 80 columns the time column
+    /// is truncated once the owner column is also shown.
+    #[test]
+    fn owner_and_time_columns_are_toggled() {
+        let mut app = app();
+        let wide = |app: &mut App| frame_sized(app, 120, 10);
+
+        let hidden = wide(&mut app);
+        assert!(!hidden.iter().any(|l| l.contains("alice:scc")));
+        assert!(!hidden.iter().any(|l| l.contains("2001")));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+        assert!(
+            wide(&mut app).iter().any(|l| l.contains("alice:scc")),
+            "owner column did not appear"
+        );
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+        let both = wide(&mut app);
+        assert!(
+            both.iter().any(|l| l.contains("2001")),
+            "time column did not appear:\n{}",
+            both.join("\n")
+        );
+        assert!(both.iter().any(|l| l.contains("alice:scc")));
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('u')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('t')));
+        assert_eq!(wide(&mut app), hidden, "toggling back changed the frame");
+    }
+
+    #[test]
+    fn sorting_reorders_the_rows() {
+        let mut app = app();
+        // Rows 4..7 are the real entries; row 3 is "..".
+        let names = |app: &mut App| -> Vec<String> {
+            frame(app)[4..7]
+                .iter()
+                .map(|l| l.split('┃').nth(5).unwrap().trim().to_string())
+                .collect()
+        };
+
+        // Default is descending by size; pressing 's' again reverses it.
+        assert_eq!(names(&mut app), ["a/", "b/", "c.dat"]);
+        app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+        assert_eq!(names(&mut app), ["c.dat", "b/", "a/"]);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(names(&mut app), ["a/", "b/", "c.dat"]);
+    }
+
+    #[test]
+    fn help_popup_lists_the_keys() {
+        let mut app = app();
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+
+        let lines = frame(&mut app);
+        let text = lines.join("\n");
+        assert!(text.contains("Help"), "{}", text);
+        assert!(text.contains("Quit"), "{}", text);
+        assert!(text.contains(env!("CARGO_PKG_REPOSITORY")), "{}", text);
+
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(frame(&mut app)[1..], *EXPECTED, "popup did not close");
+    }
+
+    /// A message replaces the blank line above the listing, and must not disturb it.
+    #[test]
+    fn messages_render_above_the_listing() {
+        let mut app = app();
+        app.message(Some(Message {
+            text: "Warning: not a Ceph directory".to_string(),
+            kind: MessageKind::Warning,
+        }));
+
+        let lines = frame(&mut app);
+        assert!(lines[1].contains("not a Ceph directory"), "{:?}", lines[1]);
+        assert_eq!(&lines[2..], &EXPECTED[1..], "\n{}", lines.join("\n"));
+    }
+}
