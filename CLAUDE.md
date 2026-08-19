@@ -81,6 +81,11 @@ The listing has two independent index transformations between storage order and 
 2. `..` is a synthetic entry in the separate `dotdot` field, displayed at index 0 and absent from `entries`.
    `len()`, `get()`, and anything consuming `selected()` must account for the +1 offset.
 
+Both interact with `dirs_first`, which is why its grouping key in `sort()` is inverted under a reversed mode:
+storage is ascending, so directories have to be stored *last* to display *first*. Two consequences that are easy
+to get wrong — a change in direction alone now requires a re-sort, so `sort()` can only short-circuit while
+`dirs_first` is off, and any new grouping must go through the same key rather than being applied at display time.
+
 Any new accessor that maps a selection index to a `DirEntry` must go through `get()` rather than indexing
 `entries`.
 

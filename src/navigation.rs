@@ -23,6 +23,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["u", "Toggle show owner"],
     ["T", "Sort by modified time"],
     ["t", "Toggle show modified time"],
+    ["d", "Toggle listing directories first"],
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
@@ -125,6 +126,9 @@ impl App {
             }
             KeyCode::Char('t') => {
                 self.show_ctime = !self.show_ctime;
+            }
+            KeyCode::Char('d') => {
+                self.dir_listing.toggle_dirs_first();
             }
             KeyCode::Char('r') | KeyCode::F(5) => {
                 self.cd(&self.cwd.clone());

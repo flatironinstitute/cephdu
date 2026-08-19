@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,7 @@ pub struct DirListing {
     entries: Vec<DirEntry>,
     state: ListState,
     sort_mode: SortMode,
+    dirs_first: bool,
     pub stats: ListingStats,
     pub fs: Option<FSType>,
 }
@@ -182,14 +184,18 @@ pub enum MessageKind {
 }
 
 impl App {
-    pub fn new(cwd: Option<&PathBuf>, sort_mode: SortMode) -> Result<App, std::io::Error> {
+    pub fn new(
+        cwd: Option<&PathBuf>,
+        sort_mode: SortMode,
+        dirs_first: bool,
+    ) -> Result<App, std::io::Error> {
         let cwd: PathBuf = if let Some(cwd) = cwd {
             cwd.clone()
         } else {
             std::env::current_dir()?
         };
 
-        let dir_listing = DirListing::empty(sort_mode);
+        let dir_listing = DirListing::empty(sort_mode, dirs_first);
         let original_cwd = cwd.clone();
         let mut app = App {
             should_exit: false,
@@ -229,7 +235,11 @@ impl App {
         } else {
             self.cwd.join(path).canonicalize()?
         };
-        self.dir_listing = DirListing::from(&new, self.dir_listing.sort_mode)?;
+        self.dir_listing = DirListing::from(
+            &new,
+            self.dir_listing.sort_mode,
+            self.dir_listing.dirs_first,
+        )?;
         self.cwd = new;
         if !self.dir_listing.is_ceph() {
             self.message(Some(Message {
@@ -316,7 +326,11 @@ impl App {
 }
 
 impl DirListing {
-    pub fn from(path: &Path, sort_mode: SortMode) -> Result<DirListing, std::io::Error> {
+    pub fn from(
+        path: &Path,
+        sort_mode: SortMode,
+        dirs_first: bool,
+    ) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
@@ -331,7 +345,7 @@ impl DirListing {
                     e.size = None;
                 });
         }
-        sort(&mut entries, sort_mode);
+        sort(&mut entries, sort_mode, dirs_first);
 
         let has_parent = *path != *"/";
         let dotdot = has_parent.then(dotdot_entry);
@@ -355,6 +369,7 @@ impl DirListing {
             state,
             dotdot,
             sort_mode,
+            dirs_first,
             stats: ListingStats {
                 max_rentries,
                 total_rentries,
@@ -371,8 +386,9 @@ impl DirListing {
         mut entries: Vec<DirEntry>,
         has_dotdot: bool,
         sort_mode: SortMode,
+        dirs_first: bool,
     ) -> DirListing {
-        sort(&mut entries, sort_mode);
+        sort(&mut entries, sort_mode, dirs_first);
 
         let (max_rentries, max_size) = max_stats(&entries);
 
@@ -387,16 +403,18 @@ impl DirListing {
             entries,
             state: ListState::default().with_selected(Some(0)),
             sort_mode,
+            dirs_first,
             fs: None,
         }
     }
 
-    fn empty(sort_mode: SortMode) -> DirListing {
+    fn empty(sort_mode: SortMode, dirs_first: bool) -> DirListing {
         DirListing {
             dotdot: None,
             entries: Vec::new(),
             state: ListState::default(),
             sort_mode,
+            dirs_first,
             stats: ListingStats {
                 max_rentries: 0,
                 total_rentries: 0,
@@ -536,14 +554,21 @@ impl DirListing {
     }
 
     pub fn sort(&mut self, sort_mode: SortMode) {
-        if self.sort_mode.same_field(&sort_mode) {
+        // Reversing normally needs no re-sort, but with dirs_first the stored order
+        // depends on the direction, so only the plain case can short-circuit.
+        if self.sort_mode.same_field(&sort_mode) && !self.dirs_first {
             self.sort_mode = sort_mode;
             return;
         }
 
-        sort(&mut self.entries, sort_mode);
+        sort(&mut self.entries, sort_mode, self.dirs_first);
 
         self.sort_mode = sort_mode;
+    }
+
+    pub fn toggle_dirs_first(&mut self) {
+        self.dirs_first = !self.dirs_first;
+        sort(&mut self.entries, self.sort_mode, self.dirs_first);
     }
 
     pub fn is_ceph(&self) -> bool {
@@ -573,39 +598,39 @@ fn max_stats(entries: &[DirEntry]) -> (usize, usize) {
     })
 }
 
-fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
+fn sort(entries: &mut [DirEntry], sort_mode: SortMode, dirs_first: bool) {
+    // `entries` is stored ascending and reversed at read time, so this key has to
+    // flip with the direction: under a reversed mode, directories have to be stored
+    // *last* in order to be displayed first. Symlinks to directories group with the
+    // files, as everywhere else (#12).
+    let group = |e: &DirEntry| -> u8 {
+        if !dirs_first {
+            return 0;
+        }
+        u8::from((e.kind == EntryKind::Dir) == sort_mode.is_reversed())
+    };
+
+    let by_field = |a: &DirEntry, b: &DirEntry| match sort_mode.field() {
+        // The name comparison below is the whole ordering for this field.
+        SortField::Name => Ordering::Equal,
+        SortField::Size => a.size.cmp(&b.size).then(a.rentries.cmp(&b.rentries)),
+        SortField::Rentries => a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)),
+        SortField::CTime => a.ctime.cmp(&b.ctime).then(a.size.cmp(&b.size)),
+        SortField::Owner => a
+            .user
+            .cmp(&b.user)
+            .then(a.group.cmp(&b.group))
+            .then(a.size.cmp(&b.size)),
+    };
+
     // Every comparison ends on the name, which is unique within a directory. That
     // makes the order total, so the listing doesn't depend on readdir order.
-    let by_name = |a: &DirEntry, b: &DirEntry| a.name.cmp(&b.name);
-
-    match sort_mode.field() {
-        SortField::Name => entries.sort_by(by_name),
-        SortField::Size => entries.sort_by(|a, b| {
-            a.size
-                .cmp(&b.size)
-                .then(a.rentries.cmp(&b.rentries))
-                .then(by_name(a, b))
-        }),
-        SortField::Rentries => entries.sort_by(|a, b| {
-            a.rentries
-                .cmp(&b.rentries)
-                .then(a.size.cmp(&b.size))
-                .then(by_name(a, b))
-        }),
-        SortField::CTime => entries.sort_by(|a, b| {
-            a.ctime
-                .cmp(&b.ctime)
-                .then(a.size.cmp(&b.size))
-                .then(by_name(a, b))
-        }),
-        SortField::Owner => entries.sort_by(|a, b| {
-            a.user
-                .cmp(&b.user)
-                .then(a.group.cmp(&b.group))
-                .then(a.size.cmp(&b.size))
-                .then(by_name(a, b))
-        }),
-    }
+    entries.sort_by(|a, b| {
+        group(a)
+            .cmp(&group(b))
+            .then_with(|| by_field(a, b))
+            .then_with(|| a.name.cmp(&b.name))
+    });
 }
 
 fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
@@ -655,6 +680,29 @@ mod tests {
         }
     }
 
+    fn file(name: &str, size: usize) -> DirEntry {
+        DirEntry {
+            kind: EntryKind::File,
+            ..entry(name, size)
+        }
+    }
+
+    /// Two directories and two files, interleaved by size so that grouping them is
+    /// visible in either direction.
+    fn mixed(sort_mode: SortMode, dirs_first: bool) -> DirListing {
+        DirListing::from_entries(
+            vec![
+                entry("d_big/", 300),
+                file("f_huge", 400),
+                entry("d_small/", 100),
+                file("f_mid", 200),
+            ],
+            true,
+            sort_mode,
+            dirs_first,
+        )
+    }
+
     /// Ascending by size: small, medium, large.
     fn listing(has_dotdot: bool, sort_mode: SortMode) -> DirListing {
         DirListing::from_entries(
@@ -665,6 +713,7 @@ mod tests {
             ],
             has_dotdot,
             sort_mode,
+            false,
         )
     }
 
@@ -749,7 +798,7 @@ mod tests {
     /// An empty directory still has "..", and must not be indexed out of bounds.
     #[test]
     fn empty_listing_has_only_dotdot() {
-        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE);
+        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE, false);
         assert_eq!(displayed(&listing), [".."]);
         assert_get_matches_display(&listing);
 
@@ -787,7 +836,7 @@ mod tests {
     /// ".." is the only thing left to select in an empty directory.
     #[test]
     fn arriving_in_an_empty_directory_selects_dotdot() {
-        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE);
+        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE, false);
         listing.select_first_entry();
         assert_eq!(listing.selected(), Some(0));
         assert_eq!(listing.get(0).name, "..");
@@ -805,7 +854,7 @@ mod tests {
     /// highlighted there. Uses the crate's own tree, which cargo makes the cwd.
     #[test]
     fn cd_selects_the_first_real_entry_then_remembers() {
-        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE, false).unwrap();
         assert_eq!(app.dir_listing.selected(), Some(1));
         assert_ne!(app.dir_listing.get(1).name, "..");
 
@@ -853,7 +902,7 @@ mod tests {
     #[test]
     fn new_honors_the_startup_sort_mode() {
         let mode = SortMode::Normal(SortField::Name);
-        let app = App::new(Some(&PathBuf::from(".")), mode).unwrap();
+        let app = App::new(Some(&PathBuf::from(".")), mode, false).unwrap();
         assert_eq!(app.dir_listing.sort_mode(), mode);
 
         let names: Vec<String> = app
@@ -864,6 +913,86 @@ mod tests {
         let mut ascending = names.clone();
         ascending.sort();
         assert_eq!(names, ascending, "listing is not in name order");
+    }
+
+    #[test]
+    fn dirs_first_groups_directories_ahead_of_files() {
+        let interleaved = mixed(SortMode::Reversed(SortField::Size), false);
+        assert_eq!(
+            displayed(&interleaved),
+            ["..", "f_huge", "d_big/", "f_mid", "d_small/"]
+        );
+        assert_get_matches_display(&interleaved);
+
+        // Largest first within each group.
+        let grouped = mixed(SortMode::Reversed(SortField::Size), true);
+        assert_eq!(
+            displayed(&grouped),
+            ["..", "d_big/", "d_small/", "f_huge", "f_mid"]
+        );
+        assert_get_matches_display(&grouped);
+
+        // Smallest first within each group, directories still on top.
+        let ascending = mixed(SortMode::Normal(SortField::Size), true);
+        assert_eq!(
+            displayed(&ascending),
+            ["..", "d_small/", "d_big/", "f_mid", "f_huge"]
+        );
+        assert_get_matches_display(&ascending);
+    }
+
+    /// The grouping key flips with the direction, so a name sort has to group too.
+    #[test]
+    fn dirs_first_groups_under_any_field() {
+        let ascending = mixed(SortMode::Normal(SortField::Name), true);
+        assert_eq!(
+            displayed(&ascending),
+            ["..", "d_big/", "d_small/", "f_huge", "f_mid"]
+        );
+        assert_get_matches_display(&ascending);
+
+        let descending = mixed(SortMode::Reversed(SortField::Name), true);
+        assert_eq!(
+            displayed(&descending),
+            ["..", "d_small/", "d_big/", "f_mid", "f_huge"]
+        );
+        assert_get_matches_display(&descending);
+    }
+
+    /// Reversing normally skips the re-sort, but with dirs_first the stored order
+    /// depends on the direction, so skipping it would put the files on top.
+    #[test]
+    fn dirs_first_survives_a_direction_flip() {
+        let mut listing = mixed(SortMode::Reversed(SortField::Size), true);
+        assert_eq!(
+            displayed(&listing),
+            ["..", "d_big/", "d_small/", "f_huge", "f_mid"]
+        );
+
+        listing.sort(SortMode::Normal(SortField::Size));
+        assert_eq!(
+            displayed(&listing),
+            ["..", "d_small/", "d_big/", "f_mid", "f_huge"],
+            "the direction-only short-circuit skipped the regrouping"
+        );
+        assert_get_matches_display(&listing);
+    }
+
+    #[test]
+    fn toggling_dirs_first_regroups() {
+        let mut listing = mixed(SortMode::Reversed(SortField::Size), false);
+        let interleaved = displayed(&listing);
+
+        listing.toggle_dirs_first();
+        assert_eq!(
+            displayed(&listing),
+            ["..", "d_big/", "d_small/", "f_huge", "f_mid"]
+        );
+        assert_get_matches_display(&listing);
+
+        listing.toggle_dirs_first();
+        assert_eq!(displayed(&listing), interleaved);
+        assert_get_matches_display(&listing);
     }
 
     /// Names break ties so that the listing doesn't depend on readdir order.
@@ -877,7 +1006,7 @@ mod tests {
             SortField::CTime,
             SortField::Owner,
         ] {
-            let listing = DirListing::from_entries(tied(), false, SortMode::Normal(field));
+            let listing = DirListing::from_entries(tied(), false, SortMode::Normal(field), false);
             assert_eq!(
                 displayed(&listing),
                 ["a", "b", "c"],

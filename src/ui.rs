@@ -435,8 +435,8 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::path::PathBuf;
 
-    fn entries() -> Vec<DirEntry> {
-        let entry = |name: &str, kind, size, rentries| DirEntry {
+    fn entry(name: &str, kind: EntryKind, size: usize, rentries: Option<usize>) -> DirEntry {
+        DirEntry {
             name: name.to_string(),
             kind,
             size: Some(size),
@@ -444,7 +444,10 @@ mod tests {
             ctime: Some(992_606_400),
             user: Some("alice".to_string()),
             group: Some("scc".to_string()),
-        };
+        }
+    }
+
+    fn entries() -> Vec<DirEntry> {
         vec![
             entry("a/", EntryKind::Dir, 800_000_000_000, Some(60_000)),
             entry("b/", EntryKind::Dir, 200_000_000_000, Some(40_000)),
@@ -456,9 +459,9 @@ mod tests {
     /// filesystem the tests happen to run on. The cwd is faked for the same reason;
     /// App::new only needs a readable directory to start from.
     fn app() -> App {
-        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE, false).unwrap();
         app.cwd = PathBuf::from("/ceph/users/alice");
-        app.dir_listing = DirListing::from_entries(entries(), true, DEFAULT_SORT_MODE);
+        app.dir_listing = DirListing::from_entries(entries(), true, DEFAULT_SORT_MODE, false);
         app.message(None);
         app
     }
@@ -585,6 +588,40 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('n')));
         assert_eq!(app.dir_listing.sort_mode(), SortField::Name.default_mode());
         assert_eq!(names(&mut app), ["a/", "b/", "c.dat"]);
+    }
+
+    /// The default fixture can't show this: its directories are already the largest.
+    #[test]
+    fn dirs_first_key_regroups_the_rows() {
+        let mut app = app();
+        app.dir_listing = DirListing::from_entries(
+            vec![
+                entry("a/", EntryKind::Dir, 100_000, Some(1)),
+                entry("big.dat", EntryKind::File, 999_000, None),
+            ],
+            true,
+            DEFAULT_SORT_MODE,
+            false,
+        );
+
+        let names = |app: &mut App| -> Vec<String> {
+            frame(app)[4..6]
+                .iter()
+                .map(|l| l.split('┃').nth(5).unwrap().trim().to_string())
+                .collect()
+        };
+
+        assert_eq!(names(&mut app), ["big.dat", "a/"]);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(names(&mut app), ["a/", "big.dat"], "'d' did not regroup");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(
+            names(&mut app),
+            ["big.dat", "a/"],
+            "'d' did not toggle back"
+        );
     }
 
     #[test]

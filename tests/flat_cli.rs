@@ -330,6 +330,43 @@ fn reverse_flips_the_order() {
     assert_eq!(names(&["-nr"]), descending, "combined short form");
 }
 
+/// -d groups directories ahead of files whatever the direction. Off Ceph this is
+/// easy to see, because a directory reports no size and would otherwise sort last.
+#[test]
+fn dirs_first_groups_directories() {
+    let dir = tree("dirs_first");
+    let path = path_arg(&dir);
+
+    let names = |args: &[&str]| -> Vec<String> {
+        let mut argv = vec!["-p"];
+        argv.extend_from_slice(args);
+        argv.push(&path);
+        let out = run(&argv);
+        assert!(out.success, "{:?}: {}", args, out.stderr);
+        out.stdout
+            .lines()
+            .map(|l| l.rsplit('\t').next().unwrap().to_string())
+            .collect()
+    };
+
+    assert_eq!(names(&[]), ["big.bin", "mid.bin", "notes.txt", "sub/"]);
+    assert_eq!(names(&["-d"]), ["sub/", "big.bin", "mid.bin", "notes.txt"]);
+    assert_eq!(
+        names(&["--dirs-first"]),
+        ["sub/", "big.bin", "mid.bin", "notes.txt"]
+    );
+
+    // Reversing turns the files around but leaves the directory on top.
+    assert_eq!(
+        names(&["-d", "-r"]),
+        ["sub/", "notes.txt", "mid.bin", "big.bin"]
+    );
+    assert_eq!(
+        names(&["-d", "-n"]),
+        ["sub/", "big.bin", "mid.bin", "notes.txt"]
+    );
+}
+
 #[test]
 fn sort_flags_are_mutually_exclusive() {
     let dir = sort_tree("sort_exclusive");

@@ -53,16 +53,17 @@ Arguments:
   [PATH]  Path to the directory to display
 
 Options:
-  -f, --flat       Print a flat text listing, with units, instead of the interactive interface
-  -p, --parseable  Print a flat text listing of raw values, for parsing
-      --tui        Use the interactive interface even if stdout is not a terminal
-  -n, --name       Sort by name
-  -s, --size       Sort by size
-  -c, --count      Sort by file count
-  -u, --owner      Sort by owner
-  -t, --time       Sort by modification time
-  -r, --reverse    Reverse the sort order
-  -h, --help       Print help
+  -f, --flat        Print a flat text listing, with units, instead of the interactive interface
+  -p, --parseable   Print a flat text listing of raw values, for parsing
+      --tui         Use the interactive interface even if stdout is not a terminal
+  -n, --name        Sort by name
+  -s, --size        Sort by size
+  -c, --count       Sort by file count
+  -u, --owner       Sort by owner
+  -t, --time        Sort by modification time
+  -r, --reverse     Reverse the sort order
+  -d, --dirs-first  List directories before files
+  -h, --help        Print help
 ```
 
 ### Sorting
@@ -74,6 +75,9 @@ read ascending. In the interface, pressing the field's key reverses it from ther
 
 `-r` reverses whichever order is in effect and combines with the field flags, so
 `cephdu -r` reads smallest first and `cephdu -nr` reverses the name order.
+
+`-d` groups directories ahead of files, whatever the field and direction, sorting
+within each group by the usual rules. In the interactive interface, `d` toggles it.
 
 ## Flat text mode
 `cephdu --flat` prints the listing as text instead of drawing the interactive

@@ -142,6 +142,7 @@ mod tests {
             ],
             true,
             SortMode::Reversed(SortField::Size),
+            false,
         )
     }
 
@@ -183,6 +184,7 @@ mod tests {
             }],
             false,
             SortMode::Reversed(SortField::Size),
+            false,
         );
         assert_eq!(
             render(&listing, &Format::Parseable),
