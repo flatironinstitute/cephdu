@@ -34,5 +34,7 @@ jobs:
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
     - name: Build
       run: cargo build --verbose
+    # The tests in tests/ceph.rs skip themselves when there is no CephFS mount,
+    # which is always the case here.
     - name: Run tests
       run: cargo test --verbose

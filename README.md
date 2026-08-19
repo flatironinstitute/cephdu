@@ -96,6 +96,14 @@ whatever is reading a pipe is more often a program than a person. Pass `--tui` t
 override the detection, which is occasionally needed under tools that run a
 program on a pseudo-terminal.
 
+## Tests
+```console
+cargo test
+```
+The tests in `tests/ceph.rs` cover the recursive xattrs, so they need a CephFS
+mount and skip themselves when there isn't one. They put a scratch tree in
+`/mnt/ceph/users/$USER` by default; set `CEPHDU_TEST_DIR` to use somewhere else.
+
 ## Availability on Flatiron Institute Clusters
 
 `cephdu` is available under the `fi-utils` module on the Flatiron Institute clusters, rusty and popeye, and is the preferred way to look at disk usage on ceph.
