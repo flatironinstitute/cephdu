@@ -56,8 +56,24 @@ Options:
   -f, --flat       Print a flat text listing, with units, instead of the interactive interface
   -p, --parseable  Print a flat text listing of raw values, for parsing
       --tui        Use the interactive interface even if stdout is not a terminal
+  -n, --name       Sort by name
+  -s, --size       Sort by size
+  -c, --count      Sort by file count
+  -u, --owner      Sort by owner
+  -t, --time       Sort by modification time
+  -r, --reverse    Reverse the sort order
   -h, --help       Print help
 ```
+
+### Sorting
+Listings are sorted largest first unless one of `-n`, `-s`, `-c`, `-u` or `-t` is
+given, which choose the field to sort on. They apply to both the interactive
+interface and flat listings, and each field starts in the direction its sort key
+uses in the interface: sizes, counts and times read most-first, names and owners
+read ascending. In the interface, pressing the field's key reverses it from there.
+
+`-r` reverses whichever order is in effect and combines with the field flags, so
+`cephdu -r` reads smallest first and `cephdu -nr` reverses the name order.
 
 ## Flat text mode
 `cephdu --flat` prints the listing as text instead of drawing the interactive
@@ -73,8 +89,7 @@ interface, with the same units the interface uses:
 tab-separated fields per entry — size in bytes, recursive entry count,
 modification time in Unix seconds, user, group, and name — with `-` for anything
 the filesystem doesn't provide (recursive values are only available on Ceph).
-Directory names keep their trailing `/`, and `..` is not listed. Rows are sorted
-largest first.
+Directory names keep their trailing `/`, and `..` is not listed.
 
 ```console
 ❯ cephdu --parseable /mnt/ceph/users/$USER | head -3

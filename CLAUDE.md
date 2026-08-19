@@ -86,7 +86,16 @@ Any new accessor that maps a selection index to a `DirEntry` must go through `ge
 
 Other things worth knowing before editing:
 
-- `rentries` has 1 subtracted because Ceph counts the directory itself.
+- A sort field has three touch points: the `SortField` variant, the key arm in [navigation.rs](src/navigation.rs)
+  with its `HELP` row, and the flag in `SortFlags` in [main.rs](src/main.rs). Its starting direction lives in one
+  place only, `SortField::default_mode()`, which both the key and the flag go through — that is what keeps `-s`
+  and pressing `s` in agreement, so don't reintroduce a literal `SortMode::Reversed(...)` at a call site. `-r`
+  applies `as_reversed()` on top and so needs nothing per field. Uppercase short flags were considered for
+  reversal and rejected: `U` and `T` are already the interface's sort keys for owner and time, so `-T` would have
+  meant the opposite of pressing `T`.
+- `rentries` has 1 subtracted because Ceph counts the directory itself. Specifically it is `rsubdirs` that
+  includes the directory, since `rentries == rfiles + rsubdirs`; the non-recursive `ceph.dir.entries` has no such
+  self-count.
 - Off-Ceph, directory sizes are deliberately discarded (`e.size = None`) and `total_size` forced to 0, since
   non-Ceph dir sizes are meaningless here; a warning message is shown. The app is expected to run on non-Ceph
   paths, so keep that path working.

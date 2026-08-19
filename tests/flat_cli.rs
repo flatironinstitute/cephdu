@@ -58,6 +58,20 @@ fn tree(tag: &str) -> PathBuf {
     dir
 }
 
+/// Names deliberately in the reverse of size order, so a name sort and a size sort
+/// cannot be mistaken for one another.
+fn sort_tree(tag: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(tag);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    fs::write(dir.join("apple.bin"), vec![0u8; 1_000]).unwrap();
+    fs::write(dir.join("middle.bin"), vec![0u8; 2_000]).unwrap();
+    fs::write(dir.join("zebra.bin"), vec![0u8; 3_000]).unwrap();
+
+    dir
+}
+
 fn path_arg(dir: &Path) -> String {
     dir.to_str().unwrap().to_string()
 }
@@ -217,6 +231,112 @@ fn empty_directory_prints_nothing() {
     let out = run(&["--parseable", &path_arg(&dir)]);
     assert!(out.success, "{}", out.stderr);
     assert_eq!(out.stdout, "");
+}
+
+/// The sort flags apply to flat mode, in the same directions as the interface keys.
+#[test]
+fn sort_flags_choose_the_order() {
+    let dir = sort_tree("sort_order");
+    let path = path_arg(&dir);
+
+    let names = |flag: &str| -> Vec<String> {
+        let args: Vec<&str> = if flag.is_empty() {
+            vec!["-p", &path]
+        } else {
+            vec!["-p", flag, &path]
+        };
+        let out = run(&args);
+        assert!(out.success, "{:?}: {}", args, out.stderr);
+        out.stdout
+            .lines()
+            .map(|l| l.rsplit('\t').next().unwrap().to_string())
+            .collect()
+    };
+
+    let by_name = ["apple.bin", "middle.bin", "zebra.bin"];
+    let by_size = ["zebra.bin", "middle.bin", "apple.bin"];
+
+    assert_eq!(names(""), by_size, "the default is largest first");
+    assert_eq!(names("-n"), by_name);
+    assert_eq!(names("-s"), by_size);
+    assert_eq!(names("--name"), by_name);
+    assert_eq!(names("--size"), by_size);
+}
+
+/// Every flag is accepted in both output modes and lists the same entries. Off Ceph
+/// the counts and times all tie, so the orders they produce can't be told apart
+/// here; tests/ceph.rs covers the counts where they have values.
+#[test]
+fn every_sort_flag_is_accepted() {
+    let dir = sort_tree("sort_accepted");
+    let path = path_arg(&dir);
+
+    for flag in [
+        "-n", "-s", "-c", "-u", "-t", "--name", "--size", "--count", "--owner", "--time",
+    ] {
+        for mode in ["-p", "-f"] {
+            let out = run(&[mode, flag, &path]);
+            assert!(out.success, "{} {}: {}", mode, flag, out.stderr);
+
+            let mut listed: Vec<&str> = out
+                .stdout
+                .lines()
+                .map(|l| l.split_whitespace().last().unwrap())
+                .collect();
+            listed.sort_unstable();
+            assert_eq!(
+                listed,
+                ["apple.bin", "middle.bin", "zebra.bin"],
+                "{} {}",
+                mode,
+                flag
+            );
+        }
+    }
+}
+
+/// -r flips whichever order is in effect, and composes with the field flags rather
+/// than being one of them.
+#[test]
+fn reverse_flips_the_order() {
+    let dir = sort_tree("sort_reverse");
+    let path = path_arg(&dir);
+
+    let names = |args: &[&str]| -> Vec<String> {
+        let mut argv = vec!["-p"];
+        argv.extend_from_slice(args);
+        argv.push(&path);
+        let out = run(&argv);
+        assert!(out.success, "{:?}: {}", args, out.stderr);
+        out.stdout
+            .lines()
+            .map(|l| l.rsplit('\t').next().unwrap().to_string())
+            .collect()
+    };
+
+    let ascending = ["apple.bin", "middle.bin", "zebra.bin"];
+    let descending = ["zebra.bin", "middle.bin", "apple.bin"];
+
+    // Bare -r reverses the default, which is by size.
+    assert_eq!(names(&[]), descending);
+    assert_eq!(names(&["-r"]), ascending);
+    assert_eq!(names(&["-s", "-r"]), ascending);
+
+    // Names run the other way, so reversing them descends.
+    assert_eq!(names(&["-n"]), ascending);
+    assert_eq!(names(&["-n", "-r"]), descending);
+
+    assert_eq!(names(&["--name", "--reverse"]), descending);
+    assert_eq!(names(&["-nr"]), descending, "combined short form");
+}
+
+#[test]
+fn sort_flags_are_mutually_exclusive() {
+    let dir = sort_tree("sort_exclusive");
+    let out = run(&["-p", "-n", "-s", &path_arg(&dir)]);
+
+    assert!(!out.success, "two sort flags were accepted");
+    assert!(out.stdout.is_empty(), "printed a listing anyway");
 }
 
 #[test]
