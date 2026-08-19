@@ -7,6 +7,7 @@ use ratatui::backend::Backend;
 use std::path::PathBuf;
 
 mod app;
+mod format;
 mod fs;
 mod navigation;
 mod popup;
