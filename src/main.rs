@@ -37,7 +37,8 @@ format that does not vary with the terminal.
 
 Listings are sorted largest first unless one of the sort flags is given. Those
 mirror the interface's sort keys, and apply to both output modes. -r reverses
-whichever order is in effect, so 'cephdu -r' reads smallest first.
+whichever order is in effect, so 'cephdu -r' reads smallest first, and -d groups
+directories ahead of files whatever the field and direction.
 
 Note the following differences from 'ls -l':
   * The time shown is recursive for directories
@@ -69,6 +70,10 @@ struct Cli {
     /// Reverse the sort order
     #[arg(short, long)]
     reverse: bool,
+
+    /// List directories before files
+    #[arg(short, long)]
+    dirs_first: bool,
 }
 
 /// The startup sort order, mirroring the interface's sort keys. Each field starts
@@ -143,14 +148,15 @@ fn main() -> Result<()> {
         None
     };
     if let Some(format) = format {
-        return run_flat(&path, &format, sort_mode);
+        return run_flat(&path, &format, sort_mode, args.dirs_first);
     }
 
-    let mut app = App::new(Some(&path), sort_mode).unwrap_or_else(|e| {
-        let mut app = App::new(Some(&PathBuf::from(".")), sort_mode).unwrap_or_else(|_| {
-            eprintln!("Error opening {:?}: {}", path, e);
-            std::process::exit(1);
-        });
+    let mut app = App::new(Some(&path), sort_mode, args.dirs_first).unwrap_or_else(|e| {
+        let mut app = App::new(Some(&PathBuf::from(".")), sort_mode, args.dirs_first)
+            .unwrap_or_else(|_| {
+                eprintln!("Error opening {:?}: {}", path, e);
+                std::process::exit(1);
+            });
 
         if path_was_explicit {
             app.message(Some(Message {
@@ -175,8 +181,8 @@ fn main() -> Result<()> {
 /// Print a flat listing of `path`. Unlike the interactive interface, this doesn't
 /// fall back to the current directory on failure: a script needs to see the error
 /// rather than a listing of somewhere else.
-fn run_flat(path: &Path, format: &Format, sort_mode: SortMode) -> Result<()> {
-    let listing = app::DirListing::from(path, sort_mode).unwrap_or_else(|e| {
+fn run_flat(path: &Path, format: &Format, sort_mode: SortMode, dirs_first: bool) -> Result<()> {
+    let listing = app::DirListing::from(path, sort_mode, dirs_first).unwrap_or_else(|e| {
         eprintln!("Error opening {:?}: {}", path, e);
         std::process::exit(1);
     });
