@@ -92,7 +92,8 @@ Any new accessor that maps a selection index to a `DirEntry` must go through `ge
 Other things worth knowing before editing:
 
 - A sort field has three touch points: the `SortField` variant, the key arm in [navigation.rs](src/navigation.rs)
-  with its `HELP` row, and the flag in `SortFlags` in [main.rs](src/main.rs). Its starting direction lives in one
+  with its `HELP` row, and the flag in `SortFlags` in [main.rs](src/main.rs). `default_mode()` and `label()` are
+  exhaustive matches on the enum, so the compiler catches those two. Its starting direction lives in one
   place only, `SortField::default_mode()`, which both the key and the flag go through — that is what keeps `-s`
   and pressing `s` in agreement, so don't reintroduce a literal `SortMode::Reversed(...)` at a call site. `-r`
   applies `as_reversed()` on top and so needs nothing per field. Uppercase short flags were considered for
@@ -111,6 +112,10 @@ Other things worth knowing before editing:
   falling back to index. On the first arrival in a directory there is nothing to restore, so
   `select_first_entry()` skips `..` and lands on the first real entry; `select_first()` is the literal top of the
   list and stays bound to Home/`g`. Refresh and Backspace go through the remembered path, so they don't jump.
+- The bottom border carries a status area (sort field, direction, and `dirs first` when on) sharing the border
+  with the right-aligned help hint, so it costs no vertical space. `SortField::label()` is the naming authority
+  for both it and the CLI flags. The golden frame in [ui.rs](src/ui.rs) includes this line, so a change to the
+  status wording means regenerating it.
 - `POPUP_TEXT_HEIGHT` in [ui.rs](src/ui.rs) is a fixed constant that popup scroll clamping and scrollbar state
   depend on; the popup is not sized to the terminal.
 - The gauge in `gauge()` draws the percentage text *inside* the bar with inverted colors on the overlapping
