@@ -12,7 +12,7 @@ use crate::fs::{FSType, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name
 use crate::navigation;
 use crate::popup::Popup;
 
-const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
+pub const DEFAULT_SORT_MODE: SortMode = SortMode::Reversed(SortField::Size);
 
 pub struct App {
     pub should_exit: bool,
@@ -323,21 +323,9 @@ impl DirListing {
         sort(&mut entries, sort_mode);
 
         let has_parent = *path != *"/";
-        let dotdot = has_parent.then(|| DirEntry {
-            name: "..".to_string(),
-            kind: EntryKind::Dir,
-            size: None,
-            rentries: None,
-            ctime: None,
-            user: None,
-            group: None,
-        });
+        let dotdot = has_parent.then(dotdot_entry);
 
-        let (max_rentries, max_size) = entries.iter().fold((0, 0), |(max_r, max_s), entry| {
-            let r = entry.rentries.unwrap_or(0);
-            let s = entry.size.unwrap_or(0);
-            (max_r.max(r), max_s.max(s))
-        });
+        let (max_rentries, max_size) = max_stats(&entries);
         // Note a possible consistency check we're not using here:
         // that the sum of the entry sizes add up to the cwd's r-sizes.
         let total_rentries = entry_cwd.rentries.unwrap_or(0);
@@ -364,6 +352,32 @@ impl DirListing {
             },
             fs,
         })
+    }
+
+    /// Build a listing from entries that didn't come from a filesystem.
+    #[cfg(test)]
+    pub fn from_entries(
+        mut entries: Vec<DirEntry>,
+        has_dotdot: bool,
+        sort_mode: SortMode,
+    ) -> DirListing {
+        sort(&mut entries, sort_mode);
+
+        let (max_rentries, max_size) = max_stats(&entries);
+
+        DirListing {
+            dotdot: has_dotdot.then(dotdot_entry),
+            stats: ListingStats {
+                max_rentries,
+                total_rentries: entries.iter().filter_map(|e| e.rentries).sum(),
+                max_size,
+                total_size: entries.iter().filter_map(|e| e.size).sum(),
+            },
+            entries,
+            state: ListState::default().with_selected(Some(0)),
+            sort_mode,
+            fs: None,
+        }
     }
 
     fn default() -> DirListing {
@@ -523,21 +537,59 @@ impl DirListing {
     }
 }
 
+/// The synthetic ".." entry, which has no stat of its own.
+fn dotdot_entry() -> DirEntry {
+    DirEntry {
+        name: "..".to_string(),
+        kind: EntryKind::Dir,
+        size: None,
+        rentries: None,
+        ctime: None,
+        user: None,
+        group: None,
+    }
+}
+
+/// The largest size and rentries in the listing, which set the gauge scales.
+fn max_stats(entries: &[DirEntry]) -> (usize, usize) {
+    entries.iter().fold((0, 0), |(max_r, max_s), entry| {
+        let r = entry.rentries.unwrap_or(0);
+        let s = entry.size.unwrap_or(0);
+        (max_r.max(r), max_s.max(s))
+    })
+}
+
 fn sort(entries: &mut [DirEntry], sort_mode: SortMode) {
+    // Every comparison ends on the name, which is unique within a directory. That
+    // makes the order total, so the listing doesn't depend on readdir order.
+    let by_name = |a: &DirEntry, b: &DirEntry| a.name.cmp(&b.name);
+
     match sort_mode.field() {
-        SortField::Name => entries.sort_by(|a, b| a.name.cmp(&b.name).then(a.size.cmp(&b.size))),
-        SortField::Size => {
-            entries.sort_by(|a, b| a.size.cmp(&b.size).then(a.rentries.cmp(&b.rentries)))
-        }
-        SortField::Rentries => {
-            entries.sort_by(|a, b| a.rentries.cmp(&b.rentries).then(a.size.cmp(&b.size)))
-        }
-        SortField::CTime => entries.sort_by(|a, b| a.ctime.cmp(&b.ctime).then(a.size.cmp(&b.size))),
+        SortField::Name => entries.sort_by(by_name),
+        SortField::Size => entries.sort_by(|a, b| {
+            a.size
+                .cmp(&b.size)
+                .then(a.rentries.cmp(&b.rentries))
+                .then(by_name(a, b))
+        }),
+        SortField::Rentries => entries.sort_by(|a, b| {
+            a.rentries
+                .cmp(&b.rentries)
+                .then(a.size.cmp(&b.size))
+                .then(by_name(a, b))
+        }),
+        SortField::CTime => entries.sort_by(|a, b| {
+            a.ctime
+                .cmp(&b.ctime)
+                .then(a.size.cmp(&b.size))
+                .then(by_name(a, b))
+        }),
         SortField::Owner => entries.sort_by(|a, b| {
             a.user
                 .cmp(&b.user)
                 .then(a.group.cmp(&b.group))
                 .then(a.size.cmp(&b.size))
+                .then(by_name(a, b))
         }),
     }
 }
@@ -571,4 +623,46 @@ fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
     }
 
     Ok((entry_cwd, entries))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, size: usize) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            kind: EntryKind::Dir,
+            size: Some(size),
+            rentries: Some(size),
+            ctime: Some(size),
+            user: Some("alice".to_string()),
+            group: Some("scc".to_string()),
+        }
+    }
+
+    fn displayed(listing: &DirListing) -> Vec<String> {
+        listing.iter_entries().map(|e| e.name.clone()).collect()
+    }
+
+    /// Names break ties so that the listing doesn't depend on readdir order.
+    #[test]
+    fn equal_entries_are_ordered_by_name() {
+        let tied = || vec![entry("c", 1), entry("a", 1), entry("b", 1)];
+
+        for field in [
+            SortField::Size,
+            SortField::Rentries,
+            SortField::CTime,
+            SortField::Owner,
+        ] {
+            let listing = DirListing::from_entries(tied(), false, SortMode::Normal(field));
+            assert_eq!(
+                displayed(&listing),
+                ["a", "b", "c"],
+                "{:?} is unstable",
+                field
+            );
+        }
+    }
 }
