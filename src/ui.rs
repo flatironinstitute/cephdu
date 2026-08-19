@@ -67,8 +67,27 @@ impl App {
 
         let helptitle = Line::from(" Press ? for help ").fg(TEXT_FG_COLOR).bold();
 
+        // Ordering that outlives a keypress needs to be visible, since the listing
+        // alone doesn't always reveal it: grouping is invisible when the directories
+        // happen to sort first anyway, and two fields can agree on an order.
+        let sort_mode = self.dir_listing.sort_mode();
+        let mut status = format!(
+            " {} {}",
+            sort_mode.field().label(),
+            if sort_mode.is_reversed() {
+                "↓"
+            } else {
+                "↑"
+            }
+        );
+        if self.dir_listing.dirs_first() {
+            status.push_str(" · dirs first");
+        }
+        status.push(' ');
+
         let block = Block::bordered()
             .title(title.left_aligned())
+            .title_bottom(Line::from(status).fg(TEXT_FG_COLOR).bold().left_aligned())
             .title_bottom(helptitle.right_aligned())
             .border_set(border::THICK);
 
@@ -495,7 +514,7 @@ mod tests {
         "┃    1.0 MB ┃         0.0%       ┃          ┃                    ┃ c.dat       ┃",
         "┃                                                                              ┃",
         "┃                                                                              ┃",
-        "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Press ? for help ┛",
+        "┗ size ↓ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Press ? for help ┛",
     ];
 
     #[test]
@@ -590,6 +609,37 @@ mod tests {
         assert_eq!(names(&mut app), ["a/", "b/", "c.dat"]);
     }
 
+    /// The status area names the field and points the way the values run.
+    #[test]
+    fn the_status_area_tracks_the_sort() {
+        let mut app = app();
+        let status = |app: &mut App| -> String {
+            let border = frame(app).last().unwrap().clone();
+            border
+                .trim_start_matches('┗')
+                .split('━')
+                .next()
+                .unwrap()
+                .trim()
+                .to_string()
+        };
+
+        assert_eq!(status(&mut app), "size ↓", "the default is largest first");
+
+        // Same field again reverses it.
+        app.handle_key(KeyEvent::from(KeyCode::Char('s')));
+        assert_eq!(status(&mut app), "size ↑");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('n')));
+        assert_eq!(status(&mut app), "name ↑");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+        assert_eq!(status(&mut app), "count ↓");
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('d')));
+        assert_eq!(status(&mut app), "count ↓ · dirs first");
+    }
+
     /// The default fixture can't show this: its directories are already the largest.
     #[test]
     fn dirs_first_key_regroups_the_rows() {
@@ -611,10 +661,14 @@ mod tests {
                 .collect()
         };
 
+        let shows_indicator = |app: &mut App| frame(app).join("\n").contains("dirs first");
+
         assert_eq!(names(&mut app), ["big.dat", "a/"]);
+        assert!(!shows_indicator(&mut app), "indicator shown while off");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
         assert_eq!(names(&mut app), ["a/", "big.dat"], "'d' did not regroup");
+        assert!(shows_indicator(&mut app), "no indicator while grouping");
 
         app.handle_key(KeyEvent::from(KeyCode::Char('d')));
         assert_eq!(
@@ -622,6 +676,28 @@ mod tests {
             ["big.dat", "a/"],
             "'d' did not toggle back"
         );
+        assert!(!shows_indicator(&mut app), "indicator outlived the mode");
+    }
+
+    /// The status area lives in the bottom border and must not disturb the rest of it.
+    #[test]
+    fn dirs_first_indicator_shares_the_bottom_border() {
+        let mut app = app();
+        let plain = frame(&mut app);
+
+        app.dir_listing.toggle_dirs_first();
+        let grouped = frame(&mut app);
+
+        assert_eq!(
+            grouped[..grouped.len() - 1],
+            plain[..plain.len() - 1],
+            "the indicator changed a row other than the bottom border"
+        );
+
+        let border = grouped.last().unwrap();
+        assert!(border.contains("dirs first"), "{}", border);
+        assert!(border.contains("Press ? for help"), "{}", border);
+        assert_eq!(border.chars().count(), 80, "{}", border);
     }
 
     #[test]

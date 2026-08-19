@@ -79,6 +79,10 @@ read ascending. In the interface, pressing the field's key reverses it from ther
 `-d` groups directories ahead of files, whatever the field and direction, sorting
 within each group by the usual rules. In the interactive interface, `d` toggles it.
 
+The bottom border of the interface names the sort in effect, as in `size ↓` for
+largest first or `name ↑` for A to Z, and appends `· dirs first` while directories
+are being grouped.
+
 ## Flat text mode
 `cephdu --flat` prints the listing as text instead of drawing the interactive
 interface, with the same units the interface uses:

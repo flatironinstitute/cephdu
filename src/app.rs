@@ -136,6 +136,17 @@ pub enum SortField {
 }
 
 impl SortField {
+    /// The name this field goes by in the interface and on the command line.
+    pub const fn label(self) -> &'static str {
+        match self {
+            SortField::Name => "name",
+            SortField::Size => "size",
+            SortField::Rentries => "count",
+            SortField::Owner => "owner",
+            SortField::CTime => "time",
+        }
+    }
+
     /// The direction a field starts in when it is first chosen, by key or by flag.
     /// Sizes, counts and times read most-first; names and owners read ascending.
     pub const fn default_mode(self) -> SortMode {
@@ -564,6 +575,10 @@ impl DirListing {
         sort(&mut self.entries, sort_mode, self.dirs_first);
 
         self.sort_mode = sort_mode;
+    }
+
+    pub fn dirs_first(&self) -> bool {
+        self.dirs_first
     }
 
     pub fn toggle_dirs_first(&mut self) {
