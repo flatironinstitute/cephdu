@@ -641,8 +641,168 @@ mod tests {
         }
     }
 
+    /// Ascending by size: small, medium, large.
+    fn listing(has_dotdot: bool, sort_mode: SortMode) -> DirListing {
+        DirListing::from_entries(
+            vec![
+                entry("large", 300),
+                entry("small", 100),
+                entry("medium", 200),
+            ],
+            has_dotdot,
+            sort_mode,
+        )
+    }
+
     fn displayed(listing: &DirListing) -> Vec<String> {
         listing.iter_entries().map(|e| e.name.clone()).collect()
+    }
+
+    /// `get()` maps a selection index to what the same index displays. This is the
+    /// pairing that the reversal and the ".." offset can each break.
+    fn assert_get_matches_display(listing: &DirListing) {
+        let names = displayed(listing);
+        assert_eq!(names.len(), listing.len());
+        for (i, name) in names.iter().enumerate() {
+            assert_eq!(&listing.get(i).name, name, "get({}) disagrees", i);
+        }
+    }
+
+    #[test]
+    fn display_order_follows_direction() {
+        let normal = listing(false, SortMode::Normal(SortField::Size));
+        assert_eq!(displayed(&normal), ["small", "medium", "large"]);
+
+        let reversed = listing(false, SortMode::Reversed(SortField::Size));
+        assert_eq!(displayed(&reversed), ["large", "medium", "small"]);
+    }
+
+    #[test]
+    fn dotdot_displays_first_in_both_directions() {
+        for sort_mode in [
+            SortMode::Normal(SortField::Size),
+            SortMode::Reversed(SortField::Size),
+        ] {
+            let listing = listing(true, sort_mode);
+            assert_eq!(displayed(&listing)[0], "..");
+            assert_eq!(listing.len(), 4);
+        }
+    }
+
+    #[test]
+    fn get_agrees_with_display_order() {
+        for has_dotdot in [false, true] {
+            for field in [SortField::Name, SortField::Size, SortField::Rentries] {
+                for sort_mode in [SortMode::Normal(field), SortMode::Reversed(field)] {
+                    assert_get_matches_display(&listing(has_dotdot, sort_mode));
+                }
+            }
+        }
+    }
+
+    /// Reversing must flip the display without disturbing the stored order, and
+    /// `get()` has to keep up.
+    #[test]
+    fn reversing_in_place_keeps_get_consistent() {
+        let mut listing = listing(true, SortMode::Normal(SortField::Size));
+        assert_eq!(displayed(&listing), ["..", "small", "medium", "large"]);
+        assert_get_matches_display(&listing);
+
+        listing.sort(SortMode::Reversed(SortField::Size));
+        assert_eq!(displayed(&listing), ["..", "large", "medium", "small"]);
+        assert_get_matches_display(&listing);
+    }
+
+    #[test]
+    fn selection_is_clamped_to_the_listing() {
+        let mut listing = listing(true, DEFAULT_SORT_MODE);
+
+        listing.select_last();
+        assert_eq!(listing.selected(), Some(3));
+        listing.select_next(1);
+        assert_eq!(listing.selected(), Some(3), "ran off the end");
+        listing.select_next(100);
+        assert_eq!(listing.selected(), Some(3), "ran off the end");
+
+        listing.select_prev(100);
+        assert_eq!(listing.selected(), Some(0), "ran off the start");
+
+        assert_eq!(listing.saturating_select(2), 2);
+        assert_eq!(listing.saturating_select(99), 3);
+    }
+
+    /// An empty directory still has "..", and must not be indexed out of bounds.
+    #[test]
+    fn empty_listing_has_only_dotdot() {
+        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE);
+        assert_eq!(displayed(&listing), [".."]);
+        assert_get_matches_display(&listing);
+
+        listing.select_last();
+        listing.select_next(1);
+        assert_eq!(listing.selected(), Some(0));
+    }
+
+    #[test]
+    fn select_by_name_uses_display_indices() {
+        let mut listing = listing(true, SortMode::Reversed(SortField::Size));
+
+        assert_eq!(listing.select_by_name("large"), Some(1));
+        assert_eq!(listing.selected(), Some(1));
+        assert_eq!(listing.get(1).name, "large");
+
+        assert_eq!(listing.select_by_name(".."), Some(0));
+        assert_eq!(listing.select_by_name("nonexistent"), None);
+        assert_eq!(
+            listing.selected(),
+            Some(0),
+            "failed lookup moved the cursor"
+        );
+    }
+
+    #[test]
+    fn arriving_selects_the_first_real_entry() {
+        let mut listing = listing(true, DEFAULT_SORT_MODE);
+
+        listing.select_first_entry();
+        assert_eq!(listing.selected(), Some(1));
+        assert_ne!(listing.get(1).name, "..");
+    }
+
+    /// ".." is the only thing left to select in an empty directory.
+    #[test]
+    fn arriving_in_an_empty_directory_selects_dotdot() {
+        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE);
+        listing.select_first_entry();
+        assert_eq!(listing.selected(), Some(0));
+        assert_eq!(listing.get(0).name, "..");
+    }
+
+    /// The root has no "..", so its first entry is at index 0.
+    #[test]
+    fn arriving_without_dotdot_selects_index_zero() {
+        let mut listing = listing(false, DEFAULT_SORT_MODE);
+        listing.select_first_entry();
+        assert_eq!(listing.selected(), Some(0));
+    }
+
+    /// Entering a directory skips "..", but returning to one restores what was
+    /// highlighted there. Uses the crate's own tree, which cargo makes the cwd.
+    #[test]
+    fn cd_selects_the_first_real_entry_then_remembers() {
+        let mut app = App::new(Some(&PathBuf::from("."))).unwrap();
+        assert_eq!(app.dir_listing.selected(), Some(1));
+        assert_ne!(app.dir_listing.get(1).name, "..");
+
+        app.dir_listing
+            .select_by_name("src/")
+            .expect("src/ should be listed");
+        app.cd(&PathBuf::from("src"));
+        assert_eq!(app.dir_listing.selected(), Some(1), "did not skip '..'");
+
+        app.cd(&PathBuf::from(".."));
+        let selected = app.dir_listing.selected().unwrap();
+        assert_eq!(app.dir_listing.get(selected).name, "src/");
     }
 
     /// Names break ties so that the listing doesn't depend on readdir order.
