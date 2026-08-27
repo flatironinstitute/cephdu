@@ -182,6 +182,51 @@ fn flag_spellings_agree() {
     assert!(human.stdout.contains("1.5 MB"), "{}", human.stdout);
 }
 
+/// -e prints values in full. The parseable format is already exact, so it has
+/// nothing to switch there.
+#[test]
+fn exact_shows_values_in_full() {
+    let dir = tree("exact");
+    let path = path_arg(&dir);
+
+    let units = run(&["-f", &path]);
+    let exact = run(&["-f", "-e", &path]);
+    assert!(exact.success, "{}", exact.stderr);
+
+    assert!(units.stdout.contains("1.5 MB"), "{}", units.stdout);
+    assert!(!units.stdout.contains("1500000"), "{}", units.stdout);
+
+    assert!(exact.stdout.contains("1500000"), "{}", exact.stdout);
+    assert!(!exact.stdout.contains("1.5 MB"), "{}", exact.stdout);
+    assert!(
+        !exact.stdout.contains('\t'),
+        "fell back to the parseable format"
+    );
+
+    assert_eq!(
+        exact.stdout,
+        run(&["--flat", "--exact", &path]).stdout,
+        "long forms disagree"
+    );
+    assert_eq!(
+        run(&["-p", "-e", &path]).stdout,
+        run(&["-p", &path]).stdout,
+        "-e changed the parseable format, which is already exact"
+    );
+
+    let name_columns: Vec<usize> = exact
+        .stdout
+        .lines()
+        .zip(["big.bin", "mid.bin", "notes.txt", "sub/"])
+        .map(|(line, name)| line.rfind(name).unwrap())
+        .collect();
+    assert!(
+        name_columns.windows(2).all(|w| w[0] == w[1]),
+        "ragged name column:\n{}",
+        exact.stdout
+    );
+}
+
 #[test]
 fn human_rows_are_aligned() {
     let dir = tree("aligned");

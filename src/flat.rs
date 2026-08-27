@@ -1,7 +1,7 @@
 use std::io::Write;
 
 use crate::app::{DirEntry, DirListing};
-use crate::format::{CTIME_FMT_WIDTH, ctime_str, rentries_str, size_str};
+use crate::format::{CTIME_FMT_WIDTH, Numbers, ctime_str};
 
 /// Stands in for a value the filesystem didn't give us, so that every row has the
 /// same number of fields.
@@ -14,8 +14,10 @@ pub enum Format {
     /// Tab-separated raw values: bytes, entry count, ctime as Unix seconds.
     /// Deliberately independent of whether stdout is a terminal.
     Parseable,
-    /// Aligned columns with the same units the TUI shows.
-    Human,
+    /// Aligned columns with the same units the TUI shows. `exact` shows sizes and
+    /// counts in full instead; the parseable format is always exact, so it has
+    /// nothing to switch.
+    Human { exact: bool },
 }
 
 pub fn write_listing(
@@ -29,7 +31,9 @@ pub fn write_listing(
 
     match format {
         Format::Parseable => write_parseable(&entries, out),
-        Format::Human => write_human(&entries, current_year, out),
+        Format::Human { exact } => {
+            write_human(&entries, current_year, Numbers::from_exact(*exact), out)
+        }
     }
 }
 
@@ -55,6 +59,7 @@ fn write_parseable(entries: &[&DirEntry], out: &mut impl Write) -> std::io::Resu
 fn write_human(
     entries: &[&DirEntry],
     current_year: isize,
+    numbers: Numbers,
     out: &mut impl Write,
 ) -> std::io::Result<()> {
     let width = |f: &dyn Fn(&DirEntry) -> String| -> usize {
@@ -62,11 +67,11 @@ fn write_human(
     };
 
     let size = |e: &DirEntry| match e.size {
-        Some(_) => size_str(e.size, true),
+        Some(_) => numbers.size(e.size, true),
         None => MISSING.to_string(),
     };
     let rentries = |e: &DirEntry| match e.rentries {
-        Some(_) => rentries_str(e.rentries, true),
+        Some(_) => numbers.count(e.rentries, true),
         None => MISSING.to_string(),
     };
     let owner = |e: &DirEntry| {
@@ -166,7 +171,7 @@ mod tests {
     /// ".." exists in the listing but must never be printed.
     #[test]
     fn dotdot_is_omitted() {
-        for format in [Format::Parseable, Format::Human] {
+        for format in [Format::Parseable, Format::Human { exact: false }] {
             let out = render(&listing(), &format);
             assert!(!out.contains(".."), "{:?} leaked '..'", out);
             assert_eq!(out.lines().count(), 3);
@@ -194,7 +199,7 @@ mod tests {
 
     #[test]
     fn human_columns_are_aligned() {
-        let out = render(&listing(), &Format::Human);
+        let out = render(&listing(), &Format::Human { exact: false });
         let lines: Vec<&str> = out.lines().collect();
 
         // Every row has to agree on where the name column starts.
@@ -213,6 +218,33 @@ mod tests {
         assert!(lines[0].contains("48.2 K"), "{}", lines[0]);
         assert!(lines[0].contains("2001"), "{}", lines[0]);
         assert!(lines[0].contains("alice:scc"), "{}", lines[0]);
+    }
+
+    /// Exact numbers, but still the aligned human layout rather than the parseable
+    /// one.
+    #[test]
+    fn human_exact_shows_values_in_full() {
+        let out = render(&listing(), &Format::Human { exact: true });
+        let lines: Vec<&str> = out.lines().collect();
+
+        assert!(lines[0].contains("1099511627776"), "{}", lines[0]);
+        assert!(lines[0].contains("48213"), "{}", lines[0]);
+        assert!(!lines[0].contains("1.1 TB"), "{}", lines[0]);
+
+        assert!(!out.contains('\t'), "fell back to the parseable format");
+        assert!(lines[0].contains("2001"), "{}", lines[0]);
+        assert!(lines[0].contains("alice:scc"), "{}", lines[0]);
+
+        let name_starts: Vec<usize> = lines
+            .iter()
+            .zip(["data/", "bigfile.h5", "notes.txt"])
+            .map(|(line, name)| line.rfind(name).unwrap())
+            .collect();
+        assert!(
+            name_starts.windows(2).all(|w| w[0] == w[1]),
+            "ragged name column in\n{}",
+            out
+        );
     }
 
     /// Display order follows the sort mode, and reversal must not be re-sorted in.

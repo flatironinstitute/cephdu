@@ -63,6 +63,7 @@ Options:
   -t, --time        Sort by modification time
   -r, --reverse     Reverse the sort order
   -d, --dirs-first  List directories before files
+  -e, --exact       Show sizes and counts in full instead of scaled to a unit
   -h, --help        Print help
 ```
 
@@ -78,6 +79,10 @@ read ascending. In the interface, pressing the field's key reverses it from ther
 
 `-d` groups directories ahead of files, whatever the field and direction, sorting
 within each group by the usual rules. In the interactive interface, `d` toggles it.
+
+`-e` prints sizes and counts in full instead of scaled to a unit, which is useful
+when the rounding matters; `e` toggles it in the interface. The parseable format is
+always exact, so `-e` has no effect there.
 
 The bottom border of the interface names the sort in effect, as in `size ↓` for
 largest first or `name ↑` for A to Z, and appends `· dirs first` while directories

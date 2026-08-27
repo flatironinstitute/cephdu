@@ -4,6 +4,47 @@ use chrono::{DateTime, Datelike, Local};
 /// 'Jan  1  2000' or 'Dec 31 12:34'
 pub const CTIME_FMT_WIDTH: usize = 12;
 
+/// How sizes and counts are rendered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Numbers {
+    /// Scaled to a base-1000 unit, as in "1.5 MB".
+    Units,
+    /// In full, as in "1500000": wider, but exact.
+    Exact,
+}
+
+impl Numbers {
+    /// Picks the form from the toggle both output modes present.
+    pub fn from_exact(exact: bool) -> Numbers {
+        if exact {
+            Numbers::Exact
+        } else {
+            Numbers::Units
+        }
+    }
+
+    /// `align` pads the unit form so that suffixes line up in a right-aligned
+    /// column; it has nothing to pad in the exact form.
+    pub fn size(self, size: Option<usize>, align: bool) -> String {
+        match self {
+            Numbers::Units => size_str(size, align),
+            Numbers::Exact => exact(size),
+        }
+    }
+
+    pub fn count(self, count: Option<usize>, align: bool) -> String {
+        match self {
+            Numbers::Units => rentries_str(count, align),
+            Numbers::Exact => exact(count),
+        }
+    }
+}
+
+/// Missing values render empty, as they do in the unit forms.
+fn exact(value: Option<usize>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_default()
+}
+
 /// Advance to the next unit when rounding to one decimal would carry, so that
 /// 999_999 shows as "1.0 MB" rather than "1000.0 KB", which is a character wider
 /// than the columns allow.
@@ -18,7 +59,7 @@ fn carry_unit(value: usize, unit_index: u32, num_units: usize) -> u32 {
 
 /// Format a byte count with base-1000 units. `align` pads the unit-less case so
 /// that the unit suffixes line up in a right-aligned column.
-pub fn size_str(size: Option<usize>, align: bool) -> String {
+fn size_str(size: Option<usize>, align: bool) -> String {
     if size.is_none() {
         return "".to_string();
     }
@@ -45,7 +86,7 @@ pub fn size_str(size: Option<usize>, align: bool) -> String {
 }
 
 /// Format a file count with base-1000 units.
-pub fn rentries_str(rentries: Option<usize>, align: bool) -> String {
+fn rentries_str(rentries: Option<usize>, align: bool) -> String {
     if rentries.is_none() {
         return "".to_string();
     }
@@ -177,6 +218,39 @@ mod tests {
         let secs = 992_606_400; // 2001-06-15T12:00:00Z
         assert!(ctime_str(secs, 2026).contains("2001"));
         assert!(!ctime_str(secs, 2001).contains("2001"));
+    }
+
+    #[test]
+    fn exact_renders_values_in_full() {
+        assert_eq!(Numbers::Exact.size(Some(1_500_000), true), "1500000");
+        assert_eq!(Numbers::Exact.size(Some(0), true), "0");
+        assert_eq!(
+            Numbers::Exact.size(Some(usize::MAX), false),
+            usize::MAX.to_string()
+        );
+        assert_eq!(Numbers::Exact.count(Some(48_213), true), "48213");
+
+        // Alignment padding is a unit-form concern, so it must not appear here.
+        assert_eq!(
+            Numbers::Exact.size(Some(120), true),
+            Numbers::Exact.size(Some(120), false)
+        );
+    }
+
+    /// Both forms have to agree on how a missing value looks, since the callers
+    /// substitute their own placeholder for it.
+    #[test]
+    fn missing_values_render_empty_in_both_forms() {
+        for numbers in [Numbers::Units, Numbers::Exact] {
+            assert_eq!(numbers.size(None, true), "");
+            assert_eq!(numbers.count(None, true), "");
+        }
+    }
+
+    #[test]
+    fn units_go_through_numbers_unchanged() {
+        assert_eq!(Numbers::Units.size(Some(1_500_000), false), "1.5 MB");
+        assert_eq!(Numbers::Units.count(Some(48_213), false), "48.2 K");
     }
 
     /// A garbage rctime xattr must not panic.

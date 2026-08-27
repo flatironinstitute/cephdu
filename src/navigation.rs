@@ -24,6 +24,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["T", "Sort by modified time"],
     ["t", "Toggle show modified time"],
     ["d", "Toggle listing directories first"],
+    ["e", "Toggle exact sizes and counts"],
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
@@ -129,6 +130,9 @@ impl App {
             }
             KeyCode::Char('d') => {
                 self.dir_listing.toggle_dirs_first();
+            }
+            KeyCode::Char('e') => {
+                self.exact = !self.exact;
             }
             KeyCode::Char('r') | KeyCode::F(5) => {
                 self.cd(&self.cwd.clone());
