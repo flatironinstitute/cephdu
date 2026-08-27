@@ -45,6 +45,17 @@ const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
+/// The widths and number formatting a frame's rows share. Measured once from the
+/// whole listing, since a column is only as narrow as its widest value.
+struct Columns {
+    gauge: usize,
+    user: usize,
+    group: usize,
+    ctime: usize,
+    current_year: isize,
+    show_owner: bool,
+    show_ctime: bool,
+}
 
 impl App {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
@@ -56,6 +67,8 @@ impl App {
     }
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
+        let cols = self.columns();
+
         let title = Line::from(format!(
             " {} ━━ {}, {} files ",
             self.cwd.to_str().unwrap_or("[invalid UTF-8]"),
@@ -91,31 +104,7 @@ impl App {
             .title_bottom(helptitle.right_aligned())
             .border_set(border::THICK);
 
-        let (user_width, group_width) = if self.show_owner {
-            (
-                self.dir_listing
-                    .iter_entries()
-                    .filter_map(|e| e.user.as_ref())
-                    .map(|s| s.len())
-                    .max()
-                    .unwrap_or(0),
-                self.dir_listing
-                    .iter_entries()
-                    .filter_map(|e| e.group.as_ref())
-                    .map(|s| s.len())
-                    .max()
-                    .unwrap_or(0),
-            )
-        } else {
-            (0, 0)
-        };
-
-        let ctime_width = if self.show_ctime { CTIME_FMT_WIDTH } else { 0 };
-
-        // Iterate through all elements in the `items` and stylize them.
         let selected = self.dir_listing.selected();
-        // Get the current year so that we know how to format a time string
-        let current_year = Local::now().year() as isize;
         let items: Vec<ListItem> = self
             .dir_listing
             .iter_entries()
@@ -123,15 +112,9 @@ impl App {
             .map(|(i, entry)| {
                 entry
                     .to_listitem(
-                        GAUGE_WIDTH,
+                        &cols,
                         &self.dir_listing.stats,
-                        user_width,
-                        group_width,
-                        ctime_width,
-                        current_year,
                         selected.map(|s| s == i).unwrap_or(false),
-                        self.show_owner,
-                        self.show_ctime,
                     )
                     .fg(TEXT_FG_COLOR)
                     .bg(if selected.map(|s| s == i).unwrap_or(false) {
@@ -150,6 +133,35 @@ impl App {
             .bg(LIST_BG_COLOR);
 
         StatefulWidget::render(list, area, buf, self.dir_listing.state_mut());
+    }
+
+    fn columns(&self) -> Columns {
+        let widest = |f: &dyn Fn(&DirEntry) -> String| -> usize {
+            self.dir_listing
+                .iter_entries()
+                .map(|e| f(e).len())
+                .max()
+                .unwrap_or(0)
+        };
+
+        let (user, group) = if self.show_owner {
+            (
+                widest(&|e| e.user.clone().unwrap_or_default()),
+                widest(&|e| e.group.clone().unwrap_or_default()),
+            )
+        } else {
+            (0, 0)
+        };
+
+        Columns {
+            gauge: GAUGE_WIDTH,
+            user,
+            group,
+            ctime: if self.show_ctime { CTIME_FMT_WIDTH } else { 0 },
+            current_year: Local::now().year() as isize,
+            show_owner: self.show_owner,
+            show_ctime: self.show_ctime,
+        }
     }
 
     fn render_message(&self, message: &Option<Message>, area: Rect, buf: &mut Buffer) {
@@ -222,18 +234,11 @@ fn safe_div(a: usize, b: usize) -> f64 {
 }
 
 impl DirEntry {
-    #[allow(clippy::too_many_arguments)]
     fn to_listitem(
         &self,
-        gauge_width: usize,
+        cols: &Columns,
         listing_stats: &ListingStats,
-        user_width: usize,
-        group_width: usize,
-        ctime_width: usize,
-        current_year: isize,
         selected: bool,
-        show_owner: bool,
-        show_ctime: bool,
     ) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
@@ -271,45 +276,47 @@ impl DirEntry {
         spans.extend(gauge(
             size_gauge_fraction,
             size_gauge_percent,
-            gauge_width,
+            cols.gauge,
             selected,
         ));
 
         spans.push(style_selected(Span::styled(
-            format!("┃  {:>7} ┃", rentries_str(self.rentries, true),),
+            format!("┃  {:>7} ┃", rentries_str(self.rentries, true)),
             text_color,
         )));
 
         spans.extend(gauge(
             rentries_gauge_fraction,
             rentries_gauge_percent,
-            gauge_width,
+            cols.gauge,
             selected,
         ));
 
         spans.push(style_selected(Span::styled("┃", text_color)));
 
-        if show_owner {
+        if cols.show_owner {
             if let Some(user) = &self.user {
                 spans.push(style_selected(Span::styled(
-                    format!(" {:>uwidth$}", user, uwidth = user_width),
+                    format!(" {:>uwidth$}", user, uwidth = cols.user),
                     text_color,
                 )));
             }
             if let Some(group) = &self.group {
                 spans.push(style_selected(Span::styled(
-                    format!(":{:gwidth$}", group, gwidth = group_width),
+                    format!(":{:gwidth$}", group, gwidth = cols.group),
                     text_color,
                 )));
             }
         }
 
-        if show_ctime && let Some(ctime_seconds) = self.ctime {
+        if cols.show_ctime
+            && let Some(ctime_seconds) = self.ctime
+        {
             spans.push(style_selected(Span::styled(
                 format!(
                     " {:cwidth$}",
-                    ctime_str(ctime_seconds, current_year),
-                    cwidth = ctime_width
+                    ctime_str(ctime_seconds, cols.current_year),
+                    cwidth = cols.ctime
                 ),
                 text_color,
             )));
