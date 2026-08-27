@@ -95,6 +95,9 @@ colors it does name are the row the cursor is on, and red and yellow for errors 
 warnings. The bars keep the terminal's own color on every row, cursor included, so
 the column reads as one chart. Flat listings are never colored.
 
+`NO_COLOR` is honored. Since it suppresses colors but not attributes, a colored
+band would simply disappear, so the cursor row falls back to bold when it is set.
+
 ### Reading the border
 The top border shows the current path on the left and the directory's totals on
 the right. A path too long for the border loses its start, marked with `…`, so

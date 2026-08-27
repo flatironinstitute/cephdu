@@ -141,6 +141,11 @@ Other things worth knowing before editing:
   The white foreground is for light terminals: with an inherited foreground the text would be dark on a dark
   band there. Inheriting it instead is the one-line change that keeps the text from shifting color at all, at
   that cost.
+  Under `NO_COLOR` the band would simply disappear, because crossterm drops color sequences and keeps
+  attributes, leaving the `> ` marker as the only cue. `selected_style(colors_disabled())` therefore falls back
+  to bold, which is why the gauge still has to remove `BOLD` from its own spans. Tests that assert the row's
+  colors read them from `selected_style(colors_disabled())` rather than naming them, so `NO_COLOR=1 cargo test`
+  passes too.
   Two alternatives were tried and rejected. Reverse video adapts to any terminal for free, but it inverts the
   gauges: a `█` reversed is drawn in the background color while a reversed empty cell paints the foreground
   across its full width, so a bar shows the wrong value. Marker-and-bold alone, with no background, reads as too

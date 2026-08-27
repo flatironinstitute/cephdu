@@ -40,6 +40,24 @@ const WARNING_STYLE: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
 /// The row is not emboldened as well: bold brightens the text on top of the color
 /// change, which reads as the row lightening rather than being marked.
 const SELECTED_STYLE: Style = Style::new().bg(Color::DarkGray).fg(Color::White);
+/// What is left when colors are off. crossterm drops every color sequence under
+/// NO_COLOR but still sends attributes, so a band made only of colors vanishes and
+/// the row would be marked by nothing but the marker.
+const SELECTED_STYLE_NO_COLOR: Style = Style::new().add_modifier(Modifier::BOLD);
+
+/// no-color.org: set and non-empty. crossterm reads the same variable to decide
+/// whether to emit color sequences at all.
+fn colors_disabled() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+}
+
+const fn selected_style(colors_disabled: bool) -> Style {
+    if colors_disabled {
+        SELECTED_STYLE_NO_COLOR
+    } else {
+        SELECTED_STYLE
+    }
+}
 
 /// Marks the selected row, and is prepended to every row by the list widget.
 const HIGHLIGHT_SYMBOL: &str = "> ";
@@ -52,6 +70,8 @@ const RENTRIES_WIDTH: usize = 7;
 /// whole listing since a column is only as narrow as its widest value, and the
 /// number formatting.
 struct Columns {
+    /// How the cursor row is marked, which depends on whether colors are allowed.
+    selected: Style,
     gauge: usize,
     size: usize,
     rentries: usize,
@@ -128,7 +148,7 @@ impl App {
             .map(|(i, entry)| {
                 entry.to_listitem(&cols, &self.dir_listing.stats).style(
                     if selected.map(|s| s == i).unwrap_or(false) {
-                        SELECTED_STYLE
+                        cols.selected
                     } else {
                         Style::new()
                     },
@@ -187,6 +207,7 @@ impl App {
         };
 
         Columns {
+            selected: selected_style(colors_disabled()),
             gauge: GAUGE_WIDTH,
             size: SIZE_WIDTH.max(widest(&|e| numbers.size(e.size, true))),
             rentries: RENTRIES_WIDTH.max(widest(&|e| numbers.count(e.rentries, true))),
@@ -356,10 +377,13 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize) -> Vec<Span<'static>
         (whole / 8, eighths)
     };
 
-    // The bar is data, so it keeps the terminal's foreground on every row: taking the
-    // cursor row's would leave one bar in the column a different color from its
-    // neighbours. Only the background behind it comes from the row.
-    let bar: Style = Style::new().fg(Color::Reset);
+    // The bar is data, so it keeps the terminal's own rendering on every row: taking
+    // the cursor row's foreground, or the bold it falls back to when colors are off,
+    // would leave one bar in the column looking different from its neighbours. Only
+    // the background behind it comes from the row.
+    let bar: Style = Style::new()
+        .fg(Color::Reset)
+        .remove_modifier(Modifier::BOLD);
     // The percentage over the bar swaps the terminal's own pair, not the row's, for
     // the same reason: reversing the cursor row's blue would put blue text on the
     // bar, which is only legible on some terminals.
@@ -557,13 +581,19 @@ mod tests {
         terminal.draw(|f| ui(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 
-        // Row 3 is "..", the initial selection; row 4 is the first real entry.
-        assert_eq!(buf[(5, 3)].bg, Color::DarkGray);
-        assert_eq!(buf[(5, 3)].fg, Color::White);
+        // Row 3 is "..", the initial selection; row 4 is the first real entry. The
+        // expected style is read rather than named, so the test holds under NO_COLOR.
+        let expected = selected_style(colors_disabled());
+        assert_eq!(buf[(5, 3)].bg, expected.bg.unwrap_or(Color::Reset));
+        assert_eq!(buf[(5, 3)].fg, expected.fg.unwrap_or(Color::Reset));
         assert!(!buf[(5, 3)].modifier.contains(Modifier::REVERSED));
         // The band and the marker are the cue; the row is not emboldened as well,
-        // since bold brightens the text on top of the color change.
-        assert!(!buf[(5, 3)].modifier.contains(Modifier::BOLD));
+        // since bold brightens the text on top of the color change. With colors off
+        // that is inverted: bold is all that is left.
+        assert_eq!(
+            buf[(5, 3)].modifier.contains(Modifier::BOLD),
+            expected.add_modifier.contains(Modifier::BOLD),
+        );
 
         assert_eq!(buf[(5, 4)].bg, Color::Reset);
         assert_eq!(buf[(5, 4)].fg, Color::Reset);
@@ -597,6 +627,20 @@ mod tests {
             reversed(22, 4),
             "the percentage over the bar is not reversed"
         );
+    }
+
+    /// With colors off, the band would be dropped by crossterm and the row left with
+    /// nothing but the marker, so it falls back to an attribute instead.
+    #[test]
+    fn the_cursor_row_survives_no_color() {
+        let colored = selected_style(false);
+        assert_eq!(colored.bg, Some(Color::DarkGray));
+        assert_eq!(colored.fg, Some(Color::White));
+
+        let plain = selected_style(true);
+        assert_eq!(plain.bg, None, "a color that NO_COLOR would drop");
+        assert_eq!(plain.fg, None, "a color that NO_COLOR would drop");
+        assert!(plain.add_modifier.contains(Modifier::BOLD));
     }
 
     /// Nothing names an absolute color: every cell is either the terminal's own or
@@ -991,7 +1035,8 @@ mod tests {
 
         // The row still shades behind the bar, but not behind the percentage, which
         // reverses the terminal's own pair so it reads on any of them.
-        assert_eq!(buf[(46, 4)].bg, Color::DarkGray);
+        let band = selected_style(colors_disabled()).bg.unwrap_or(Color::Reset);
+        assert_eq!(buf[(46, 4)].bg, band);
         assert_eq!(buf[(46, 5)].bg, Color::Reset);
         assert_eq!(buf[(52, 4)].bg, Color::Reset);
         assert_eq!(buf[(52, 5)].bg, Color::Reset);
