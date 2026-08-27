@@ -43,7 +43,8 @@ Layering, roughly bottom-up:
   output modes. Pure functions, so this is where formatting tests live.
 - [navigation.rs](src/navigation.rs) — `App::handle_key`, plus the `HELP` table that is both the key mapping's
   documentation and the source of the `?` popup text. Add a keybinding *and* its `HELP` row together.
-- [ui.rs](src/ui.rs) — pure rendering from `&App`; no state changes except ratatui's own `ListState`.
+- [ui.rs](src/ui.rs) — rendering from `&mut App`. The only state it writes is ratatui's `ListState` and the
+  clamp of `App::hscroll`, both of which depend on the area being drawn into.
 - [flat.rs](src/flat.rs) — the non-interactive renderer, which takes a `DirListing` and a `Write`.
 - [popup.rs](src/popup.rs) — scrollable modal used only for help so far.
 
@@ -116,6 +117,11 @@ Other things worth knowing before editing:
   with the right-aligned help hint, so it costs no vertical space. `SortField::label()` is the naming authority
   for both it and the CLI flags. The golden frame in [ui.rs](src/ui.rs) includes this line, so a change to the
   status wording means regenerating it.
+- Horizontal scrolling is ours, not ratatui's: `List` has no horizontal offset (only `Paragraph` does, via
+  `scroll((y, x))`). `render_list` draws the block itself, renders the rows into a `Buffer` as wide as they need,
+  and copies a window of it into the block's inner area. That scrolls every column identically and keeps the
+  border and its titles fixed, at the cost of one buffer per frame. The window is why `hscroll` is clamped during
+  rendering rather than in the key handler.
 - `POPUP_TEXT_HEIGHT` in [ui.rs](src/ui.rs) is a fixed constant that popup scroll clamping and scrollbar state
   depend on; the popup is not sized to the terminal.
 - The gauge in `gauge()` draws the percentage text *inside* the bar with inverted colors on the overlapping

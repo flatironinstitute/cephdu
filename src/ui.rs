@@ -45,6 +45,8 @@ const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
+/// Marks the selected row, and is prepended to every row by the list widget.
+const HIGHLIGHT_SYMBOL: &str = "> ";
 /// Minimum widths of the size and count columns. The unit forms never exceed these,
 /// so only exact values widen them.
 const SIZE_WIDTH: usize = 8;
@@ -134,14 +136,35 @@ impl App {
             })
             .collect();
 
-        // Create a List from all list items and highlight the currently selected one
+        // Rows can be wider than the terminal, and ratatui's List has no horizontal
+        // offset, so the rows are rendered to a buffer as wide as they need and a
+        // window of it is copied out. That scrolls every column alike, and leaves
+        // the block to draw the border and its titles in place.
+        let content_width = items
+            .iter()
+            .map(|item| item.width() + HIGHLIGHT_SYMBOL.len())
+            .max()
+            .unwrap_or(0);
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
         let list = List::new(items)
-            .block(block)
-            .highlight_symbol("> ")
+            .highlight_symbol(HIGHLIGHT_SYMBOL)
             .highlight_spacing(HighlightSpacing::Always)
             .bg(LIST_BG_COLOR);
 
-        StatefulWidget::render(list, area, buf, self.dir_listing.state_mut());
+        let width = content_width.max(inner.width as usize);
+        self.hscroll = self.hscroll.min(width - inner.width as usize);
+
+        let mut rows = Buffer::empty(Rect::new(0, 0, width as u16, inner.height));
+        StatefulWidget::render(list, rows.area, &mut rows, self.dir_listing.state_mut());
+
+        for y in 0..inner.height {
+            for x in 0..inner.width {
+                buf[(inner.x + x, inner.y + y)] = rows[((self.hscroll as u16) + x, y)].clone();
+            }
+        }
     }
 
     fn columns(&self) -> Columns {
@@ -756,6 +779,88 @@ mod tests {
         for line in &lines[2..] {
             assert_eq!(line.chars().count(), 80, "{:?} is not full width", line);
         }
+    }
+
+    /// A wide listing, so that there is something to scroll.
+    fn wide_app() -> App {
+        let mut app = app();
+        app.show_owner = true;
+        app.show_ctime = true;
+        app
+    }
+
+    /// The inside of a row, without the border cell at either end.
+    fn row_inside(app: &mut App, row: usize) -> Vec<char> {
+        let chars: Vec<char> = frame(app)[row].chars().collect();
+        chars[1..chars.len() - 1].to_vec()
+    }
+
+    /// The whole listing scrolls, every column alike; the border does not.
+    #[test]
+    fn scrolling_shifts_the_columns_not_the_border() {
+        let mut app = wide_app();
+
+        let before = frame(&mut app);
+        let row_before = row_inside(&mut app, 4);
+
+        app.handle_key(KeyEvent::from(KeyCode::Right));
+        app.handle_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(app.hscroll, 8);
+
+        let after = frame(&mut app);
+        let row_after = row_inside(&mut app, 4);
+
+        let shifted: Vec<char> = row_before.into_iter().skip(8).collect();
+        assert_eq!(
+            row_after[..shifted.len()],
+            shifted[..],
+            "the row did not shift by 8 columns"
+        );
+
+        // The border and its titles are drawn outside the scrolled window.
+        assert_eq!(before[2], after[2], "the top border moved");
+        assert_eq!(before[9], after[9], "the bottom border moved");
+    }
+
+    /// Rendering clamps the offset, because only the renderer knows how wide the
+    /// rows came out.
+    #[test]
+    fn scrolling_stops_at_the_right_edge() {
+        let mut app = wide_app();
+
+        app.hscroll = 10_000;
+        let clamped = frame(&mut app);
+        let max = app.hscroll;
+        assert!(max > 0 && max < 10_000, "offset was not clamped: {}", max);
+
+        app.handle_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(frame(&mut app), clamped, "scrolled past the end");
+        assert_eq!(app.hscroll, max);
+
+        app.handle_key(KeyEvent::from(KeyCode::Left));
+        assert_eq!(app.hscroll, max - 4);
+        assert_ne!(frame(&mut app), clamped);
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_left_edge() {
+        let mut app = wide_app();
+        let home = frame(&mut app);
+
+        app.handle_key(KeyEvent::from(KeyCode::Left));
+        assert_eq!(app.hscroll, 0);
+        assert_eq!(frame(&mut app), home);
+    }
+
+    /// Rows that already fit have nothing to scroll.
+    #[test]
+    fn a_narrow_listing_does_not_scroll() {
+        let mut app = app();
+        let before = frame(&mut app);
+
+        app.handle_key(KeyEvent::from(KeyCode::Right));
+        assert_eq!(frame(&mut app), before, "scrolled a listing that fits");
+        assert_eq!(app.hscroll, 0);
     }
 
     /// The status area lives in the bottom border and must not disturb the rest of it.

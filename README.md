@@ -88,6 +88,11 @@ The bottom border of the interface names the sort in effect, as in `size ↓` fo
 largest first or `name ↑` for A to Z, and appends `· dirs first` while directories
 are being grouped.
 
+### Scrolling
+The listing scrolls sideways with the left and right arrow keys when the rows are
+wider than the terminal, which happens once the owner or time columns are shown.
+The whole listing moves, gauges included; the border and its labels stay put.
+
 ## Flat text mode
 `cephdu --flat` prints the listing as text instead of drawing the interactive
 interface, with the same units the interface uses:

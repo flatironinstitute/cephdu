@@ -25,6 +25,9 @@ pub struct App {
     pub show_ctime: bool,
     /// Show sizes and counts in full instead of scaled to a unit.
     pub exact: bool,
+    /// Columns scrolled off the left of the listing. Clamped when rendered, since
+    /// only the renderer knows how wide the rows came out.
+    pub hscroll: usize,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
 }
@@ -219,6 +222,7 @@ impl App {
             show_owner: false,
             show_ctime: false,
             exact: false,
+            hscroll: 0,
             message: None,
             highlighted: HashMap::new(),
         };

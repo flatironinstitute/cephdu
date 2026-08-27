@@ -7,12 +7,16 @@ use crate::app::App;
 use crate::ui::POPUP_TEXT_HEIGHT;
 
 static PAGE_BY: usize = 10;
+/// Columns per horizontal scroll step.
+static SCROLL_BY: usize = 4;
 
 pub const HELP: &[[&str; 2]] = &[
     ["q, Esc", "Quit"],
     ["Down, j", "Move cursor down"],
     ["Up, k", "Move cursor up"],
     ["Page Down", "Jump cursor down"],
+    ["Left", "Scroll left"],
+    ["Right", "Scroll right"],
     ["Page Up", "Jump cursor up"],
     ["Enter", "Open directory"],
     ["Backspace", "Go to parent directory"],
@@ -105,6 +109,12 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.dir_listing.select_next(PAGE_BY);
+            }
+            KeyCode::Left => {
+                self.hscroll = self.hscroll.saturating_sub(SCROLL_BY);
+            }
+            KeyCode::Right => {
+                self.hscroll = self.hscroll.saturating_add(SCROLL_BY);
             }
             KeyCode::Backspace => {
                 self.cd(&"..".into());
