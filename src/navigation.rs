@@ -24,9 +24,9 @@ pub const HELP: &[[&str; 2]] = &[
     ["s", "Sort by size"],
     ["c, C", "Sort by file count"],
     ["U", "Sort by owner"],
-    ["u", "Toggle show owner"],
-    ["T", "Sort by modified time"],
-    ["t", "Toggle show modified time"],
+    ["u", "Toggle show owner (reads it if needed)"],
+    ["T", "Sort by change time"],
+    ["t", "Toggle show change time (reads it if needed)"],
     ["d", "Toggle listing directories first"],
     ["e", "Toggle exact sizes and counts"],
     ["?, h", "Show this help message"],
@@ -133,10 +133,10 @@ impl App {
                 self.cd(&self.original_cwd.clone());
             }
             KeyCode::Char('u') => {
-                self.show_owner = !self.show_owner;
+                self.toggle_owner();
             }
             KeyCode::Char('t') => {
-                self.show_ctime = !self.show_ctime;
+                self.toggle_ctime();
             }
             KeyCode::Char('d') => {
                 self.dir_listing.toggle_dirs_first();

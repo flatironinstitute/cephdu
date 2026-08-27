@@ -144,5 +144,8 @@ pub fn get_rctime(path: &Path) -> Option<usize> {
     let rctime = get_xattr(path, &DIR_RCTIME_ATTR_C)?;
     // convert rctime xattr from string ("seconds.nanos") to unsigned
     let rctime = rctime.trim().split(".").next()?.parse::<usize>().ok()?;
+    // Zero is passed through: creating a directory sets its ctime but not its rctime,
+    // so one that nothing has happened in since reports zero, and the epoch is the
+    // idiomatic way for a Unix timestamp to say it was never set.
     Some(rctime)
 }

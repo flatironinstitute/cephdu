@@ -15,6 +15,46 @@ use crate::popup::Popup;
 
 pub const DEFAULT_SORT_MODE: SortMode = SortField::Size.default_mode();
 
+/// How a directory is read and ordered. Carried across directory changes, and the
+/// reason `DirListing::from` takes one value rather than a run of booleans.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    pub sort_mode: SortMode,
+    pub dirs_first: bool,
+    /// Whether to stat for the owner. Off by default because a directory needs no
+    /// stat at all without it: its size, count and kind all come from elsewhere. The
+    /// uid-to-name lookup is the cheap half -- measured at ~18us from SSSD's cache on
+    /// Rusty against 1.37ms for one xattr read -- so it is the stat that is saved.
+    pub owners: bool,
+    /// Whether to read a directory's recursive time. Off by default because it is a
+    /// third of the xattr round trips a listing makes, and measurably so: 42s to 30s
+    /// on ten thousand directories. A file's time comes from the stat it needs
+    /// anyway, so this only concerns directories.
+    pub times: bool,
+}
+
+impl Options {
+    /// Just the ordering, with the defaults for the rest.
+    #[cfg(test)]
+    pub fn sorted(sort_mode: SortMode) -> Options {
+        Options {
+            sort_mode,
+            ..Options::default()
+        }
+    }
+}
+
+impl Default for Options {
+    fn default() -> Options {
+        Options {
+            sort_mode: DEFAULT_SORT_MODE,
+            dirs_first: false,
+            owners: false,
+            times: false,
+        }
+    }
+}
+
 pub struct App {
     pub should_exit: bool,
     pub cwd: PathBuf,
@@ -37,8 +77,7 @@ pub struct DirListing {
     dotdot: Option<DirEntry>,
     entries: Vec<DirEntry>,
     state: ListState,
-    sort_mode: SortMode,
-    dirs_first: bool,
+    options: Options,
     pub stats: ListingStats,
     pub fs: Option<FSType>,
 }
@@ -75,15 +114,13 @@ impl DirEntry {
         }
     }
 
-    fn from(path: PathBuf, stat: Metadata) -> Self {
-        let kind = if stat.is_dir() {
-            EntryKind::Dir
-        } else if stat.is_symlink() {
-            EntryKind::Symlink
-        } else {
-            EntryKind::File
-        };
-
+    /// `stat` is absent when nothing needed it: a directory's size and count come
+    /// from the xattrs and its kind from readdir, so the only thing left for a stat
+    /// to answer is who owns it. What to fetch is read from `options` rather than
+    /// inferred from the stat: a file is stat'd for its size regardless, so for a file
+    /// the only thing `owners` saves is the uid-to-name lookup, once per distinct
+    /// owner.
+    fn from(path: PathBuf, kind: EntryKind, stat: Option<Metadata>, options: &Options) -> Self {
         // we want to do our xattr calls asap to try and take advantage of MDS caching
         let rentries: Option<usize> = if kind == EntryKind::Dir {
             // rentries seems to include the self-count, which is confusing when there are
@@ -96,13 +133,15 @@ impl DirEntry {
         let size: Option<usize> = if kind == EntryKind::Dir {
             get_rbytes(&path)
         } else {
-            Some(stat.len() as usize)
+            stat.as_ref().map(|s| s.len() as usize)
         };
 
         let ctime: Option<usize> = if kind == EntryKind::Dir {
-            get_rctime(&path)
+            // A third of the round trips a listing makes, and only wanted when the
+            // time is on screen or being sorted by.
+            options.times.then(|| get_rctime(&path)).flatten()
         } else {
-            Some(stat.ctime() as usize)
+            stat.as_ref().map(|s| s.ctime() as usize)
         };
 
         let name_str = path.file_name().unwrap_or_default().to_string_lossy();
@@ -114,8 +153,10 @@ impl DirEntry {
 
         let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
 
-        let user = Some(name_or_id(stat.uid()));
-        let group = Some(name_or_id(stat.gid()));
+        let (user, group) = match stat.as_ref().filter(|_| options.owners) {
+            Some(stat) => (Some(name_or_id(stat.uid())), Some(name_or_id(stat.gid()))),
+            None => (None, None),
+        };
 
         DirEntry {
             name,
@@ -211,18 +252,14 @@ pub enum MessageKind {
 }
 
 impl App {
-    pub fn new(
-        cwd: Option<&PathBuf>,
-        sort_mode: SortMode,
-        dirs_first: bool,
-    ) -> Result<App, std::io::Error> {
+    pub fn new(cwd: Option<&PathBuf>, options: Options) -> Result<App, std::io::Error> {
         let cwd: PathBuf = if let Some(cwd) = cwd {
             cwd.clone()
         } else {
             std::env::current_dir()?
         };
 
-        let dir_listing = DirListing::empty(sort_mode, dirs_first);
+        let dir_listing = DirListing::empty(options);
         let original_cwd = cwd.clone();
         let mut app = App {
             should_exit: false,
@@ -264,11 +301,11 @@ impl App {
         } else {
             self.cwd.join(path).canonicalize()?
         };
-        self.dir_listing = DirListing::from(
-            &new,
-            self.dir_listing.sort_mode,
-            self.dir_listing.dirs_first,
-        )?;
+        // What the next read fetches follows the column, not what this listing
+        // happened to be read with: leaving a directory with the owner hidden should
+        // not make the next one pay for it.
+        let options = self.needs();
+        self.dir_listing = DirListing::from(&new, options)?;
         self.cwd = new;
         if !self.dir_listing.is_ceph() {
             self.message(Some(Message {
@@ -282,6 +319,38 @@ impl App {
         // Restore the highlighted entry if we have one
         self.restore_selected();
         Ok(())
+    }
+
+    /// What a read of this directory would have to fetch: a column needs its value,
+    /// and so does ordering by it, whether or not it is on screen.
+    fn needs(&self) -> Options {
+        let field = *self.dir_listing.sort_mode().field();
+        Options {
+            owners: self.show_owner || field == SortField::Owner,
+            times: self.show_ctime || field == SortField::CTime,
+            ..self.dir_listing.options
+        }
+    }
+
+    /// Re-read when something has come to need what this listing never fetched.
+    /// `options` records what the listing *has*, so one that already has it is left
+    /// alone however many times a column is toggled.
+    fn fetch_if_needed(&mut self) {
+        let needs = self.needs();
+        let has = self.dir_listing.options;
+        if (needs.owners && !has.owners) || (needs.times && !has.times) {
+            self.cd(&self.cwd.clone());
+        }
+    }
+
+    pub fn toggle_owner(&mut self) {
+        self.show_owner = !self.show_owner;
+        self.fetch_if_needed();
+    }
+
+    pub fn toggle_ctime(&mut self) {
+        self.show_ctime = !self.show_ctime;
+        self.fetch_if_needed();
     }
 
     pub fn popup(&mut self, title: Option<&str>, bottom_title: Option<&str>, text: Option<&str>) {
@@ -328,7 +397,10 @@ impl App {
             } else {
                 sort_mode
             },
-        )
+        );
+        // Ordering by owner or by time is the other thing that needs a read, and the
+        // sort mode is already in place, so the re-read lands in the right order.
+        self.fetch_if_needed();
     }
 
     /// Save the currently selected entry in the highlighted map.
@@ -355,15 +427,11 @@ impl App {
 }
 
 impl DirListing {
-    pub fn from(
-        path: &Path,
-        sort_mode: SortMode,
-        dirs_first: bool,
-    ) -> Result<DirListing, std::io::Error> {
+    pub fn from(path: &Path, options: Options) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
-        let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path)?;
+        let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path, &options)?;
 
         // Don't trust dir sizes on non-ceph!
         if !fs.map(FSType::is_ceph).unwrap_or(false) {
@@ -374,7 +442,7 @@ impl DirListing {
                     e.size = None;
                 });
         }
-        sort(&mut entries, sort_mode, dirs_first);
+        sort(&mut entries, options.sort_mode, options.dirs_first);
 
         let has_parent = *path != *"/";
         let dotdot = has_parent.then(dotdot_entry);
@@ -397,8 +465,7 @@ impl DirListing {
             entries,
             state,
             dotdot,
-            sort_mode,
-            dirs_first,
+            options,
             stats: ListingStats {
                 max_rentries,
                 total_rentries,
@@ -414,10 +481,9 @@ impl DirListing {
     pub fn from_entries(
         mut entries: Vec<DirEntry>,
         has_dotdot: bool,
-        sort_mode: SortMode,
-        dirs_first: bool,
+        options: Options,
     ) -> DirListing {
-        sort(&mut entries, sort_mode, dirs_first);
+        sort(&mut entries, options.sort_mode, options.dirs_first);
 
         let (max_rentries, max_size) = max_stats(&entries);
 
@@ -431,19 +497,17 @@ impl DirListing {
             },
             entries,
             state: ListState::default().with_selected(Some(0)),
-            sort_mode,
-            dirs_first,
+            options,
             fs: None,
         }
     }
 
-    fn empty(sort_mode: SortMode, dirs_first: bool) -> DirListing {
+    fn empty(options: Options) -> DirListing {
         DirListing {
             dotdot: None,
             entries: Vec::new(),
             state: ListState::default(),
-            sort_mode,
-            dirs_first,
+            options,
             stats: ListingStats {
                 max_rentries: 0,
                 total_rentries: 0,
@@ -458,11 +522,12 @@ impl DirListing {
     pub fn iter_entries_sorted(&self) -> impl Iterator<Item = &DirEntry> {
         // `entries` is always sorted ascending; reversed modes are applied here
         // rather than by re-sorting.
-        let entries_iter: Box<dyn Iterator<Item = &DirEntry>> = if self.sort_mode.is_reversed() {
-            Box::new(self.entries.iter().rev())
-        } else {
-            Box::new(self.entries.iter())
-        };
+        let entries_iter: Box<dyn Iterator<Item = &DirEntry>> =
+            if self.options.sort_mode.is_reversed() {
+                Box::new(self.entries.iter().rev())
+            } else {
+                Box::new(self.entries.iter())
+            };
 
         entries_iter
     }
@@ -485,7 +550,7 @@ impl DirListing {
             idx
         };
 
-        if self.sort_mode.is_reversed() {
+        if self.options.sort_mode.is_reversed() {
             &self.entries[self.entries.len() - idx - 1]
         } else {
             &self.entries[idx]
@@ -579,29 +644,37 @@ impl DirListing {
     }
 
     pub fn sort_mode(&self) -> SortMode {
-        self.sort_mode
+        self.options.sort_mode
+    }
+
+    pub fn options(&self) -> Options {
+        self.options
     }
 
     pub fn sort(&mut self, sort_mode: SortMode) {
         // Reversing normally needs no re-sort, but with dirs_first the stored order
         // depends on the direction, so only the plain case can short-circuit.
-        if self.sort_mode.same_field(&sort_mode) && !self.dirs_first {
-            self.sort_mode = sort_mode;
+        if self.options.sort_mode.same_field(&sort_mode) && !self.options.dirs_first {
+            self.options.sort_mode = sort_mode;
             return;
         }
 
-        sort(&mut self.entries, sort_mode, self.dirs_first);
+        sort(&mut self.entries, sort_mode, self.options.dirs_first);
 
-        self.sort_mode = sort_mode;
+        self.options.sort_mode = sort_mode;
     }
 
     pub fn dirs_first(&self) -> bool {
-        self.dirs_first
+        self.options.dirs_first
     }
 
     pub fn toggle_dirs_first(&mut self) {
-        self.dirs_first = !self.dirs_first;
-        sort(&mut self.entries, self.sort_mode, self.dirs_first);
+        self.options.dirs_first = !self.options.dirs_first;
+        sort(
+            &mut self.entries,
+            self.options.sort_mode,
+            self.options.dirs_first,
+        );
     }
 
     pub fn is_ceph(&self) -> bool {
@@ -666,8 +739,14 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode, dirs_first: bool) {
     });
 }
 
-fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
-    let entry_cwd = DirEntry::from(PathBuf::from(path), fs::metadata(path)?);
+fn ls(path: &PathBuf, options: &Options) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
+    // The cwd is only here for its totals, so it needs neither a stat nor a time.
+    let totals = Options {
+        owners: false,
+        times: false,
+        ..*options
+    };
+    let entry_cwd = DirEntry::from(PathBuf::from(path), EntryKind::Dir, None, &totals);
     let dir_iterator = fs::read_dir(path)?;
     let mut entries: Vec<DirEntry> = Vec::new();
 
@@ -690,8 +769,27 @@ fn ls(path: &PathBuf) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
 
         let entry = entry_result?;
         let path = entry.path();
-        let metadata = entry.metadata()?;
-        entries.push(DirEntry::from(path, metadata));
+
+        // readdir already reported the type, so file_type() only falls back to a
+        // stat of its own where the filesystem returned DT_UNKNOWN.
+        let file_type = entry.file_type()?;
+        let kind = if file_type.is_dir() {
+            EntryKind::Dir
+        } else if file_type.is_symlink() {
+            EntryKind::Symlink
+        } else {
+            EntryKind::File
+        };
+
+        // A file's size and time are the stat's alone; a directory needs one only to
+        // say who owns it.
+        let stat = if kind == EntryKind::Dir && !options.owners {
+            None
+        } else {
+            Some(entry.metadata()?)
+        };
+
+        entries.push(DirEntry::from(path, kind, stat, options));
     }
 
     Ok((entry_cwd, entries))
@@ -731,8 +829,11 @@ mod tests {
                 file("f_mid", 200),
             ],
             true,
-            sort_mode,
-            dirs_first,
+            Options {
+                sort_mode,
+                dirs_first,
+                ..Options::default()
+            },
         )
     }
 
@@ -745,8 +846,7 @@ mod tests {
                 entry("medium", 200),
             ],
             has_dotdot,
-            sort_mode,
-            false,
+            Options::sorted(sort_mode),
         )
     }
 
@@ -831,7 +931,15 @@ mod tests {
     /// An empty directory still has "..", and must not be indexed out of bounds.
     #[test]
     fn empty_listing_has_only_dotdot() {
-        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE, false);
+        let mut listing = DirListing::from_entries(
+            vec![],
+            true,
+            Options {
+                sort_mode: DEFAULT_SORT_MODE,
+                dirs_first: false,
+                ..Options::default()
+            },
+        );
         assert_eq!(displayed(&listing), [".."]);
         assert_get_matches_display(&listing);
 
@@ -869,7 +977,15 @@ mod tests {
     /// ".." is the only thing left to select in an empty directory.
     #[test]
     fn arriving_in_an_empty_directory_selects_dotdot() {
-        let mut listing = DirListing::from_entries(vec![], true, DEFAULT_SORT_MODE, false);
+        let mut listing = DirListing::from_entries(
+            vec![],
+            true,
+            Options {
+                sort_mode: DEFAULT_SORT_MODE,
+                dirs_first: false,
+                ..Options::default()
+            },
+        );
         listing.select_first_entry();
         assert_eq!(listing.selected(), Some(0));
         assert_eq!(listing.get(0).name, "..");
@@ -887,7 +1003,7 @@ mod tests {
     /// highlighted there. Uses the crate's own tree, which cargo makes the cwd.
     #[test]
     fn cd_selects_the_first_real_entry_then_remembers() {
-        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE, false).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
         assert_eq!(app.dir_listing.selected(), Some(1));
         assert_ne!(app.dir_listing.get(1).name, "..");
 
@@ -926,6 +1042,194 @@ mod tests {
         assert_eq!(dir.display_name(), "data/");
     }
 
+    /// The owner costs a stat that nothing else needs, so it is read only when asked
+    /// for -- which is also what lets a directory be listed without a stat at all.
+    #[test]
+    fn the_owner_is_read_only_when_asked_for() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        assert!(!app.dir_listing.options().owners);
+        assert!(
+            app.dir_listing
+                .iter_entries_sorted()
+                .all(|e| e.user.is_none()),
+            "an owner was read without being asked for"
+        );
+
+        app.toggle_owner();
+        assert!(app.show_owner);
+        assert!(app.dir_listing.options().owners);
+        assert!(
+            app.dir_listing
+                .iter_entries_sorted()
+                .all(|e| e.user.is_some()),
+            "asking for the owner did not read it"
+        );
+
+        // A file's size comes from the same stat either way.
+        assert!(
+            app.dir_listing
+                .iter_entries_sorted()
+                .filter(|e| e.kind == EntryKind::File)
+                .all(|e| e.size.is_some()),
+            "a file lost its size"
+        );
+
+        // Hiding it keeps what was already read -- see the toggling test -- and it is
+        // the *next* directory that stops paying, which the following test covers.
+        app.toggle_owner();
+        assert!(!app.show_owner);
+        assert!(
+            app.dir_listing.options().owners,
+            "hiding the column threw away what had been read"
+        );
+    }
+
+    /// A directory is listed without a stat, so everything it shows has to come from
+    /// somewhere else: the xattrs, and readdir for the kind.
+    #[test]
+    fn a_directory_needs_no_stat() {
+        let app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+
+        let dirs: Vec<&DirEntry> = app
+            .dir_listing
+            .iter_entries_sorted()
+            .filter(|e| e.kind == EntryKind::Dir)
+            .collect();
+        assert!(!dirs.is_empty(), "no directories to check");
+
+        for dir in dirs {
+            assert!(
+                dir.name.ends_with('/'),
+                "{} is not marked a directory",
+                dir.name
+            );
+            assert!(dir.user.is_none(), "{} was stat'd anyway", dir.name);
+        }
+    }
+
+    /// Once read, the owner stays read. Hiding the column and showing it again must
+    /// not pay for it twice, however many times it is toggled.
+    #[test]
+    fn showing_the_owner_again_does_not_re_read_it() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        app.toggle_owner();
+        assert!(
+            app.dir_listing.options().owners,
+            "the first show did not read"
+        );
+
+        // A value only a re-read would overwrite.
+        app.dir_listing.entries[0].user = Some("sentinel".to_string());
+
+        for _ in 0..3 {
+            app.toggle_owner();
+            app.toggle_owner();
+        }
+
+        assert!(app.show_owner);
+        assert_eq!(
+            app.dir_listing.entries[0].user.as_deref(),
+            Some("sentinel"),
+            "the directory was read again"
+        );
+    }
+
+    /// Leaving with the column hidden should not make the next directory pay for the
+    /// owner, and leaving with it shown should.
+    #[test]
+    fn the_next_directory_follows_the_column() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+
+        app.cd(&PathBuf::from("src"));
+        assert!(
+            !app.dir_listing.options().owners,
+            "read the owner with the column hidden"
+        );
+
+        app.toggle_owner();
+        app.cd(&PathBuf::from(".."));
+        assert!(
+            app.dir_listing.options().owners,
+            "did not read the owner with the column shown"
+        );
+        assert!(
+            app.dir_listing
+                .iter_entries_sorted()
+                .all(|e| e.user.is_some()),
+            "the owner column is shown but empty"
+        );
+    }
+
+    /// Ordering by owner needs the owner read, whether or not the column is shown.
+    /// Without this the sort silently had nothing to compare.
+    #[test]
+    fn sorting_by_owner_reads_the_owner() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        assert!(!app.dir_listing.options().owners);
+
+        app.sort_or_reverse(SortField::Owner.default_mode());
+        assert!(
+            app.dir_listing.options().owners,
+            "sorted by an owner that was never read"
+        );
+        assert!(
+            app.dir_listing
+                .iter_entries_sorted()
+                .all(|e| e.user.is_some()),
+            "the sort had nothing to compare"
+        );
+        assert_eq!(*app.dir_listing.sort_mode().field(), SortField::Owner);
+
+        // And it stays read while that ordering is in effect, even with the column
+        // hidden: the next directory has to sort by it too.
+        assert!(!app.show_owner);
+        app.cd(&PathBuf::from("src"));
+        assert!(
+            app.dir_listing.options().owners,
+            "the next directory sorted by an owner it never read"
+        );
+    }
+
+    /// A directory's recursive time is a third of the round trips, so it is read only
+    /// when wanted -- and, like the owner, kept once read. Asserted on the intent
+    /// rather than the values, since off Ceph there is no rctime to find.
+    #[test]
+    fn showing_the_time_reads_it_once() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        assert!(!app.dir_listing.options().times);
+
+        app.toggle_ctime();
+        assert!(app.show_ctime);
+        assert!(
+            app.dir_listing.options().times,
+            "showing the time did not read it"
+        );
+
+        // A value only a re-read would overwrite.
+        app.dir_listing.entries[0].ctime = Some(12_345);
+        for _ in 0..3 {
+            app.toggle_ctime();
+            app.toggle_ctime();
+        }
+        assert_eq!(
+            app.dir_listing.entries[0].ctime,
+            Some(12_345),
+            "the directory was read again"
+        );
+    }
+
+    #[test]
+    fn sorting_by_time_reads_it() {
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+
+        app.sort_or_reverse(SortField::CTime.default_mode());
+        assert!(
+            app.dir_listing.options().times,
+            "sorted by a time that was never read"
+        );
+        assert!(!app.show_ctime, "the column was shown as a side effect");
+    }
+
     /// The sort keys and the CLI sort flags share these directions, so they cannot
     /// drift apart.
     #[test]
@@ -959,7 +1263,7 @@ mod tests {
     #[test]
     fn new_honors_the_startup_sort_mode() {
         let mode = SortMode::Normal(SortField::Name);
-        let app = App::new(Some(&PathBuf::from(".")), mode, false).unwrap();
+        let app = App::new(Some(&PathBuf::from(".")), Options::sorted(mode)).unwrap();
         assert_eq!(app.dir_listing.sort_mode(), mode);
 
         let names: Vec<String> = app
@@ -1063,7 +1367,15 @@ mod tests {
             SortField::CTime,
             SortField::Owner,
         ] {
-            let listing = DirListing::from_entries(tied(), false, SortMode::Normal(field), false);
+            let listing = DirListing::from_entries(
+                tied(),
+                false,
+                Options {
+                    sort_mode: SortMode::Normal(field),
+                    dirs_first: false,
+                    ..Options::default()
+                },
+            );
             assert_eq!(
                 displayed(&listing),
                 ["a", "b", "c"],

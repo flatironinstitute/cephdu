@@ -495,7 +495,7 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{App, DEFAULT_SORT_MODE, DirListing, EntryKind, SortField};
+    use crate::app::{App, DEFAULT_SORT_MODE, DirListing, EntryKind, Options, SortField};
     use crossterm::event::{KeyCode, KeyEvent};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -525,9 +525,20 @@ mod tests {
     /// filesystem the tests happen to run on. The cwd is faked for the same reason;
     /// App::new only needs a readable directory to start from.
     fn app() -> App {
-        let mut app = App::new(Some(&PathBuf::from(".")), DEFAULT_SORT_MODE, false).unwrap();
+        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
         app.cwd = PathBuf::from("/ceph/users/alice");
-        app.dir_listing = DirListing::from_entries(entries(), true, DEFAULT_SORT_MODE, false);
+        app.dir_listing = DirListing::from_entries(
+            entries(),
+            true,
+            Options {
+                sort_mode: DEFAULT_SORT_MODE,
+                dirs_first: false,
+                // The entries carry owners and times, so this listing was read with
+                // both and pressing `u` or `t` has nothing to fetch.
+                owners: true,
+                times: true,
+            },
+        );
         app.message(None);
         app
     }
@@ -786,8 +797,7 @@ mod tests {
                 entry("big.dat", EntryKind::File, 999_000, None),
             ],
             true,
-            DEFAULT_SORT_MODE,
-            false,
+            Options::default(),
         );
 
         let names = |app: &mut App| -> Vec<String> {
@@ -1052,8 +1062,7 @@ mod tests {
                 entry("plain", EntryKind::File, 9, None),
             ],
             true,
-            DEFAULT_SORT_MODE,
-            false,
+            Options::default(),
         );
 
         let names: Vec<String> = frame(&mut app)[4..6]
