@@ -113,6 +113,10 @@ Other things worth knowing before editing:
   falling back to index. On the first arrival in a directory there is nothing to restore, so
   `select_first_entry()` skips `..` and lands on the first real entry; `select_first()` is the literal top of the
   list and stays bound to Home/`g`. Refresh and Backspace go through the remembered path, so they don't jump.
+- The top border puts the path on the left and the totals on the right, and the path is truncated from its
+  *start* by `truncate_start` so the deepest components stay visible while navigating. The path's room is
+  whatever the totals leave, computed from `area.width` rather than left to ratatui, which would otherwise let
+  the two titles collide.
 - The bottom border carries a status area (sort field, direction, and `dirs first` when on) sharing the border
   with the right-aligned help hint, so it costs no vertical space. `SortField::label()` is the naming authority
   for both it and the CLI flags. The golden frame in [ui.rs](src/ui.rs) includes this line, so a change to the

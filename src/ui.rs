@@ -80,14 +80,22 @@ impl App {
         let cols = self.columns();
         let numbers = cols.numbers;
 
-        let title = Line::from(format!(
-            " {} ━━ {}, {} files ",
-            self.cwd.to_str().unwrap_or("[invalid UTF-8]"),
+        let stats = format!(
+            " {}, {} files ",
             numbers.size(Some(self.dir_listing.stats.total_size), false),
             numbers.count(Some(self.dir_listing.stats.total_rentries), false)
-        ))
-        .fg(TEXT_FG_COLOR)
-        .bold();
+        );
+
+        // Both titles and at least one border cell between them have to fit between
+        // the corners; whatever is left over is the path's, and the spaces framing it
+        // are part of that.
+        let budget = (area.width as usize)
+            .saturating_sub(2 + stats.chars().count() + 1)
+            .saturating_sub(2);
+        let path = truncate_start(self.cwd.to_str().unwrap_or("[invalid UTF-8]"), budget);
+
+        let title = Line::from(format!(" {} ", path)).fg(TEXT_FG_COLOR).bold();
+        let stats = Line::from(stats).fg(TEXT_FG_COLOR).bold();
 
         let helptitle = Line::from(" Press ? for help ").fg(TEXT_FG_COLOR).bold();
 
@@ -111,6 +119,7 @@ impl App {
 
         let block = Block::bordered()
             .title(title.left_aligned())
+            .title(stats.right_aligned())
             .title_bottom(Line::from(status).fg(TEXT_FG_COLOR).bold().left_aligned())
             .title_bottom(helptitle.right_aligned())
             .border_set(border::THICK);
@@ -264,6 +273,23 @@ fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
         buf,
         &mut popup.scrollbar_state,
     );
+}
+
+/// Keep the end of a path when it is too long to show: the deepest components are
+/// the ones that change while navigating, so the start is what gets dropped.
+fn truncate_start(path: &str, budget: usize) -> String {
+    const MARKER: char = '…';
+
+    let len = path.chars().count();
+    if len <= budget {
+        return path.to_string();
+    }
+    if budget == 0 {
+        return String::new();
+    }
+
+    let tail: String = path.chars().skip(len - (budget - 1)).collect();
+    format!("{}{}", MARKER, tail)
 }
 
 fn safe_div(a: usize, b: usize) -> f64 {
@@ -559,7 +585,7 @@ mod tests {
     /// Everything below the header, which carries the version number.
     const EXPECTED: &[&str] = &[
         "",
-        "┏ /ceph/users/alice ━━ 1.0 TB, 100.0 K files ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
+        "┏ /ceph/users/alice ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.0 TB, 100.0 K files ┓",
         "┃>          ┃                    ┃          ┃                    ┃ ..          ┃",
         "┃  800.0 GB ┃███████ 80.0%███████┃   60.0 K ┃███████ 60.0%███████┃ a/          ┃",
         "┃  200.0 GB ┃█████   20.0%       ┃   40.0 K ┃███████ 40.0%▍      ┃ b/          ┃",
@@ -861,6 +887,69 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Right));
         assert_eq!(frame(&mut app), before, "scrolled a listing that fits");
         assert_eq!(app.hscroll, 0);
+    }
+
+    /// The path is what runs out of room, so it loses its start rather than pushing
+    /// the totals off the border.
+    #[test]
+    fn a_long_path_keeps_its_tail() {
+        let mut app = app();
+        app.cwd =
+            PathBuf::from("/ceph/users/alice/projects/simulations/run-0042/outputs/snapshots");
+
+        let border = frame(&mut app)[2].clone();
+
+        assert!(border.contains('…'), "{}", border);
+        assert!(border.contains("outputs/snapshots"), "{}", border);
+        assert!(
+            !border.contains("/ceph/users"),
+            "kept the start: {}",
+            border
+        );
+        assert!(border.ends_with("1.0 TB, 100.0 K files ┓"), "{}", border);
+        assert_eq!(border.chars().count(), 80, "{}", border);
+    }
+
+    /// Widening the totals takes room from the path, not from the border.
+    #[test]
+    fn the_totals_hold_the_right_edge() {
+        let mut app = app();
+        app.cwd =
+            PathBuf::from("/ceph/users/alice/projects/simulations/run-0042/outputs/snapshots");
+
+        for exact in [false, true] {
+            app.exact = exact;
+            let border = frame(&mut app)[2].clone();
+            assert!(border.ends_with("files ┓"), "exact={}: {}", exact, border);
+            assert_eq!(border.chars().count(), 80, "exact={}: {}", exact, border);
+        }
+    }
+
+    #[test]
+    fn truncate_start_keeps_the_tail() {
+        // Short enough to show whole, including exactly at the budget.
+        assert_eq!(truncate_start("/a/b", 10), "/a/b");
+        assert_eq!(truncate_start("/a/b", 4), "/a/b");
+
+        assert_eq!(truncate_start("/aaa/bbb/ccc", 8), "…bbb/ccc");
+        assert_eq!(truncate_start("/aaa/bbb/ccc", 1), "…");
+        assert_eq!(truncate_start("/aaa/bbb/ccc", 0), "");
+    }
+
+    /// The budget is in cells, so a multi-byte path must not overrun it.
+    #[test]
+    fn truncate_start_counts_characters() {
+        let path = "/données/été";
+        for budget in 1..=path.chars().count() {
+            let shown = truncate_start(path, budget);
+            assert_eq!(
+                shown.chars().count(),
+                budget,
+                "{:?} does not fill {} cells",
+                shown,
+                budget
+            );
+        }
     }
 
     /// The status area lives in the bottom border and must not disturb the rest of it.

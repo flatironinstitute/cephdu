@@ -88,6 +88,11 @@ The bottom border of the interface names the sort in effect, as in `size ↓` fo
 largest first or `name ↑` for A to Z, and appends `· dirs first` while directories
 are being grouped.
 
+### Reading the border
+The top border shows the current path on the left and the directory's totals on
+the right. A path too long for the border loses its start, marked with `…`, so
+that the deepest components stay visible as you navigate.
+
 ### Scrolling
 The listing scrolls sideways with the left and right arrow keys when the rows are
 wider than the terminal, which happens once the owner or time columns are shown.
