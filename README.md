@@ -44,7 +44,7 @@ Simply run `cephdu` from the command line and an interactive terminal user inter
 
 The CLI accepts one optional argument, the initial directory:
 ```console
-❯ cephdu --help
+❯ cephdu -h
 Display ceph space and file count (inode) usage in an interactive terminal
 
 Usage: cephdu [OPTIONS] [PATH]
@@ -87,6 +87,13 @@ always exact, so `-e` has no effect there.
 The bottom border of the interface names the sort in effect, as in `size ↓` for
 largest first or `name ↑` for A to Z, and appends `· dirs first` while directories
 are being grouped.
+
+### Colors
+The interface names as few colors as it can, inheriting the terminal's own, so it
+suits a light terminal as well as a dark one without being told which it is. The
+colors it does name are the row the cursor is on, and red and yellow for errors and
+warnings. The bars keep the terminal's own color on every row, cursor included, so
+the column reads as one chart. Flat listings are never colored.
 
 ### Reading the border
 The top border shows the current path on the left and the directory's totals on

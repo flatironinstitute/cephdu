@@ -2,10 +2,7 @@ use ratatui::{
     Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{
-        Color, Modifier, Style, Stylize,
-        palette::tailwind::{RED, SLATE, YELLOW},
-    },
+    style::{Color, Modifier, Style, Stylize},
     symbols::{self, border},
     text::{Line, Span, Text},
     widgets::{
@@ -18,33 +15,32 @@ use chrono::{Datelike, Local};
 
 use crate::app::App;
 use crate::app::DirEntry;
-use crate::app::EntryKind;
 use crate::app::ListingStats;
 use crate::app::Message;
 use crate::app::MessageKind;
 use crate::format::{CTIME_FMT_WIDTH, Numbers, ctime_str};
 use crate::popup::Popup;
 
-const SELECTED_BG_COLOR: Color = SLATE.c700;
-const SELECTED_STYLE: Style = Style::new()
-    .bg(SELECTED_BG_COLOR)
-    .add_modifier(Modifier::BOLD);
-const TEXT_FG_COLOR: Color = SLATE.c50;
-const HEADER_BG_COLOR: Color = SLATE.c800;
-const DIR_TEXT_COLOR: Color = SLATE.c200;
-const NONDIR_TEXT_COLOR: Color = SLATE.c200;
-const LIST_BG_COLOR: Color = SLATE.c950;
-const GAUGE_COLOR: Color = SLATE.c200;
-
-const ERROR_MESSAGE_STYLE: Style = Style::new().fg(RED.c50).bg(RED.c800);
-const WARNING_MESSAGE_STYLE: Style = Style::new().fg(YELLOW.c950).bg(YELLOW.c300);
-const INFO_MESSAGE_STYLE: Style = Style::new().fg(SLATE.c50).bg(SLATE.c950);
-
-const POPUP_FG_COLOR: Color = SLATE.c50;
-const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
+/// The colors the interface names, for their meaning rather than their shade.
+/// Everything else is left to the terminal.
+const ERROR_STYLE: Style = Style::new().fg(Color::White).bg(Color::Red);
+const WARNING_STYLE: Style = Style::new().fg(Color::Black).bg(Color::Yellow);
+/// The cursor row names both of its colors, since with the background inherited
+/// neither one alone can be relied on to contrast with it. It shades the background
+/// rather than reversing the row: reversing a gauge swaps its filled and empty
+/// cells, because a `█` reversed is drawn in the background color while a reversed
+/// empty cell paints the foreground across its whole width, so the bar would read
+/// backwards. Grey rather than blue: `Color::Blue` is ANSI 4, already the darkest
+/// blue there is, so on a theme that renders it brightly there is nothing left to
+/// raise the contrast against white with. `DarkGray` is the only named color darker
+/// than blue that won't merge into a dark terminal's own background.
+/// The row is not emboldened as well: bold brightens the text on top of the color
+/// change, which reads as the row lightening rather than being marked.
+const SELECTED_STYLE: Style = Style::new().bg(Color::DarkGray).fg(Color::White);
+
 /// Marks the selected row, and is prepended to every row by the list widget.
 const HIGHLIGHT_SYMBOL: &str = "> ";
 /// Minimum widths of the size and count columns. The unit forms never exceed these,
@@ -52,8 +48,9 @@ const HIGHLIGHT_SYMBOL: &str = "> ";
 const SIZE_WIDTH: usize = 8;
 const RENTRIES_WIDTH: usize = 7;
 
-/// The widths and number formatting a frame's rows share. Measured once from the
-/// whole listing, since a column is only as narrow as its widest value.
+/// What every row in a frame has to agree on: the widths, measured once from the
+/// whole listing since a column is only as narrow as its widest value, and the
+/// number formatting.
 struct Columns {
     gauge: usize,
     size: usize,
@@ -71,8 +68,7 @@ impl App {
     fn render_header(&self, area: Rect, buf: &mut Buffer) {
         Line::from(format!("cephdu v{} ", env!("CARGO_PKG_VERSION")).bold())
             .centered()
-            .bg(TEXT_FG_COLOR)
-            .fg(HEADER_BG_COLOR)
+            .reversed()
             .render(area, buf);
     }
 
@@ -94,10 +90,10 @@ impl App {
             .saturating_sub(2);
         let path = truncate_start(self.cwd.to_str().unwrap_or("[invalid UTF-8]"), budget);
 
-        let title = Line::from(format!(" {} ", path)).fg(TEXT_FG_COLOR).bold();
-        let stats = Line::from(stats).fg(TEXT_FG_COLOR).bold();
+        let title = Line::from(format!(" {} ", path)).bold();
+        let stats = Line::from(stats).bold();
 
-        let helptitle = Line::from(" Press ? for help ").fg(TEXT_FG_COLOR).bold();
+        let helptitle = Line::from(" Press ? for help ").bold();
 
         // Ordering that outlives a keypress needs to be visible, since the listing
         // alone doesn't always reveal it: grouping is invisible when the directories
@@ -120,7 +116,7 @@ impl App {
         let block = Block::bordered()
             .title(title.left_aligned())
             .title(stats.right_aligned())
-            .title_bottom(Line::from(status).fg(TEXT_FG_COLOR).bold().left_aligned())
+            .title_bottom(Line::from(status).bold().left_aligned())
             .title_bottom(helptitle.right_aligned())
             .border_set(border::THICK);
 
@@ -130,18 +126,13 @@ impl App {
             .iter_entries()
             .enumerate()
             .map(|(i, entry)| {
-                entry
-                    .to_listitem(
-                        &cols,
-                        &self.dir_listing.stats,
-                        selected.map(|s| s == i).unwrap_or(false),
-                    )
-                    .fg(TEXT_FG_COLOR)
-                    .bg(if selected.map(|s| s == i).unwrap_or(false) {
-                        SELECTED_BG_COLOR
+                entry.to_listitem(&cols, &self.dir_listing.stats).style(
+                    if selected.map(|s| s == i).unwrap_or(false) {
+                        SELECTED_STYLE
                     } else {
-                        LIST_BG_COLOR
-                    })
+                        Style::new()
+                    },
+                )
             })
             .collect();
 
@@ -160,8 +151,7 @@ impl App {
 
         let list = List::new(items)
             .highlight_symbol(HIGHLIGHT_SYMBOL)
-            .highlight_spacing(HighlightSpacing::Always)
-            .bg(LIST_BG_COLOR);
+            .highlight_spacing(HighlightSpacing::Always);
 
         let width = content_width.max(inner.width as usize);
         self.hscroll = self.hscroll.min(width - inner.width as usize);
@@ -218,9 +208,9 @@ impl App {
         Line::from(message.text.as_str())
             .centered()
             .style(match message.kind {
-                MessageKind::Error => ERROR_MESSAGE_STYLE,
-                MessageKind::Warning => WARNING_MESSAGE_STYLE,
-                MessageKind::Info => INFO_MESSAGE_STYLE,
+                MessageKind::Error => ERROR_STYLE,
+                MessageKind::Warning => WARNING_STYLE,
+                MessageKind::Info => Style::new(),
             })
             .render(area, buf);
     }
@@ -234,33 +224,23 @@ fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
     };
 
     let block = Block::default()
-        .title(Span::styled(
-            format!(" {} ", popup.title),
-            Style::default().fg(POPUP_FG_COLOR),
-        ))
+        .title(format!(" {} ", popup.title))
         .borders(Borders::ALL)
-        .border_set(top_border_set)
-        .border_style(Style::default().fg(POPUP_FG_COLOR))
-        .bg(LIST_BG_COLOR);
+        .border_set(top_border_set);
 
     let footer_block = Block::default()
         .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-        .border_style(Style::default().fg(POPUP_FG_COLOR))
-        .border_set(border::THICK)
-        .bg(LIST_BG_COLOR);
+        .border_set(border::THICK);
 
     let paragraph = Paragraph::new(Text::from(popup.text.as_str()))
         .block(block)
         .wrap(Wrap { trim: false })
         .alignment(Alignment::Center)
-        .bg(POPUP_BG_COLOR)
-        .fg(POPUP_FG_COLOR)
         .scroll((popup.scroll() as u16, 0));
 
     let footer = Paragraph::new(popup.bottom_title.clone())
         .block(footer_block)
-        .centered()
-        .fg(POPUP_FG_COLOR);
+        .centered();
 
     Clear.render(areas[0], buf);
     Clear.render(areas[1], buf);
@@ -297,12 +277,7 @@ fn safe_div(a: usize, b: usize) -> f64 {
 }
 
 impl DirEntry {
-    fn to_listitem(
-        &self,
-        cols: &Columns,
-        listing_stats: &ListingStats,
-        selected: bool,
-    ) -> ListItem<'static> {
+    fn to_listitem(&self, cols: &Columns, listing_stats: &ListingStats) -> ListItem<'static> {
         // The borrow checker complains that self.dir_listing remains borrowed
         // immutably unless we insist on the static lifetime of the ListItem.
         // I'm pretty sure this a borrow checker limitation, rather than a real bug.
@@ -316,66 +291,39 @@ impl DirEntry {
             .rentries
             .map(|r| safe_div(r, listing_stats.total_rentries));
 
-        let text_color = match self.kind {
-            EntryKind::Dir => DIR_TEXT_COLOR,
-            _ => NONDIR_TEXT_COLOR,
-        };
-
         let mut spans: Vec<Span> = vec![];
 
-        let style_selected = |span: Span<'static>| -> Span<'static> {
-            if selected {
-                span.style(SELECTED_STYLE)
-            } else {
-                span
-            }
-        };
-
-        spans.push(style_selected(Span::styled(
-            format!(
-                "{:>width$} ┃",
-                cols.numbers.size(self.size, true),
-                width = cols.size
-            ),
-            text_color,
+        spans.push(Span::raw(format!(
+            "{:>width$} ┃",
+            cols.numbers.size(self.size, true),
+            width = cols.size
         )));
 
-        spans.extend(gauge(
-            size_gauge_fraction,
-            size_gauge_percent,
-            cols.gauge,
-            selected,
-        ));
+        spans.extend(gauge(size_gauge_fraction, size_gauge_percent, cols.gauge));
 
-        spans.push(style_selected(Span::styled(
-            format!(
-                "┃  {:>width$} ┃",
-                cols.numbers.count(self.rentries, true),
-                width = cols.rentries
-            ),
-            text_color,
+        spans.push(Span::raw(format!(
+            "┃  {:>width$} ┃",
+            cols.numbers.count(self.rentries, true),
+            width = cols.rentries
         )));
 
         spans.extend(gauge(
             rentries_gauge_fraction,
             rentries_gauge_percent,
             cols.gauge,
-            selected,
         ));
 
-        spans.push(style_selected(Span::styled("┃", text_color)));
+        spans.push(Span::raw("┃"));
 
         if cols.show_owner {
             if let Some(user) = &self.user {
-                spans.push(style_selected(Span::styled(
-                    format!(" {:>uwidth$}", user, uwidth = cols.user),
-                    text_color,
-                )));
+                spans.push(Span::raw(format!(" {:>uwidth$}", user, uwidth = cols.user)));
             }
             if let Some(group) = &self.group {
-                spans.push(style_selected(Span::styled(
-                    format!(":{:gwidth$}", group, gwidth = cols.group),
-                    text_color,
+                spans.push(Span::raw(format!(
+                    ":{:gwidth$}",
+                    group,
+                    gwidth = cols.group
                 )));
             }
         }
@@ -383,20 +331,14 @@ impl DirEntry {
         if cols.show_ctime
             && let Some(ctime_seconds) = self.ctime
         {
-            spans.push(style_selected(Span::styled(
-                format!(
-                    " {:cwidth$}",
-                    ctime_str(ctime_seconds, cols.current_year),
-                    cwidth = cols.ctime
-                ),
-                text_color,
+            spans.push(Span::raw(format!(
+                " {:cwidth$}",
+                ctime_str(ctime_seconds, cols.current_year),
+                cwidth = cols.ctime
             )));
         }
 
-        spans.push(style_selected(Span::styled(
-            format!(" {}", self.name),
-            text_color,
-        )));
+        spans.push(Span::raw(format!(" {}", self.name)));
 
         let line = Line::from(spans);
         ListItem::new(line)
@@ -405,7 +347,7 @@ impl DirEntry {
 
 /// Draw a unicode gauge bar with a given percentage and width.
 /// The percentage will be written as a number in the middle of the gauge.
-fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> Vec<Span<'static>> {
+fn gauge(fraction: f64, percent: Option<f64>, width: usize) -> Vec<Span<'static>> {
     let text_start = width / 2 - 3;
 
     let count = |filled: f64, width: usize| -> (usize, usize) {
@@ -414,11 +356,14 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
         (whole / 8, eighths)
     };
 
-    let bg_color: Color = if selected {
-        SELECTED_BG_COLOR
-    } else {
-        LIST_BG_COLOR
-    };
+    // The bar is data, so it keeps the terminal's foreground on every row: taking the
+    // cursor row's would leave one bar in the column a different color from its
+    // neighbours. Only the background behind it comes from the row.
+    let bar: Style = Style::new().fg(Color::Reset);
+    // The percentage over the bar swaps the terminal's own pair, not the row's, for
+    // the same reason: reversing the cursor row's blue would put blue text on the
+    // bar, which is only legible on some terminals.
+    let over_bar: Style = bar.bg(Color::Reset).add_modifier(Modifier::REVERSED);
 
     let mut spans = vec![];
 
@@ -434,7 +379,7 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
                 eighths[remainder],
                 " ".repeat(width - whole - (remainder > 0) as usize)
             ),
-            Style::default().fg(GAUGE_COLOR).bg(bg_color),
+            bar,
         )
     };
 
@@ -452,13 +397,13 @@ fn gauge(fraction: f64, percent: Option<f64>, width: usize, selected: bool) -> V
         if split_char > 0 {
             spans.push(Span::styled(
                 percent_text[..split_char.min(text_width)].to_string(),
-                Style::default().bg(GAUGE_COLOR).fg(bg_color),
+                over_bar,
             ));
         }
         if split_char < text_width {
             spans.push(Span::styled(
                 percent_text[split_char..].to_string(),
-                Style::default().fg(GAUGE_COLOR).bg(bg_color),
+                Style::default(),
             ));
         }
 
@@ -603,8 +548,8 @@ mod tests {
         assert_eq!(&lines[1..], EXPECTED, "\n{}", lines.join("\n"));
     }
 
-    /// The row the cursor is on is filled manually rather than by ratatui's
-    /// highlight style, so the fill is worth checking directly.
+    /// The cursor row is shaded and names both of its colors, and the marker still
+    /// points at it.
     #[test]
     fn highlights_the_selected_row() {
         let mut app = app();
@@ -612,9 +557,78 @@ mod tests {
         terminal.draw(|f| ui(f, &mut app)).unwrap();
         let buf = terminal.backend().buffer();
 
-        // Row 2 is "..", the initial selection; row 3 is the first real entry.
-        assert_eq!(buf[(5, 3)].bg, SELECTED_BG_COLOR);
-        assert_eq!(buf[(5, 4)].bg, LIST_BG_COLOR);
+        // Row 3 is "..", the initial selection; row 4 is the first real entry.
+        assert_eq!(buf[(5, 3)].bg, Color::DarkGray);
+        assert_eq!(buf[(5, 3)].fg, Color::White);
+        assert!(!buf[(5, 3)].modifier.contains(Modifier::REVERSED));
+        // The band and the marker are the cue; the row is not emboldened as well,
+        // since bold brightens the text on top of the color change.
+        assert!(!buf[(5, 3)].modifier.contains(Modifier::BOLD));
+
+        assert_eq!(buf[(5, 4)].bg, Color::Reset);
+        assert_eq!(buf[(5, 4)].fg, Color::Reset);
+
+        assert!(frame(&mut app)[3].starts_with("┃>"));
+    }
+
+    /// The percentage sits legibly on the bar by swapping the row's own two colors.
+    /// The bar itself must never be reversed: a reversed `█` is drawn in the
+    /// background color and a reversed empty cell paints the foreground, so the bar
+    /// would show the wrong value.
+    #[test]
+    fn the_gauge_reverses_only_its_percentage() {
+        let mut app = app();
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        let reversed = |x: u16, y: u16| buf[(x, y)].modifier.contains(Modifier::REVERSED);
+
+        // x=15 is bar with no text over it; x=22 falls inside the percentage. Row 4
+        // is a/, whose bar is full; row 3 is the selected ".." row.
+        for row in [3, 4] {
+            assert!(
+                !reversed(15, row),
+                "the bar itself is reversed on row {}",
+                row
+            );
+        }
+        assert!(
+            reversed(22, 4),
+            "the percentage over the bar is not reversed"
+        );
+    }
+
+    /// Nothing names an absolute color: every cell is either the terminal's own or
+    /// one of the 16 it maps itself, which is what lets the interface suit a light
+    /// terminal as well as a dark one.
+    #[test]
+    fn the_interface_names_no_absolute_colors() {
+        let mut app = app();
+        app.message(Some(Message {
+            text: "Warning: not a Ceph directory".to_string(),
+            kind: MessageKind::Warning,
+        }));
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                for color in [cell.fg, cell.bg] {
+                    assert!(
+                        !matches!(color, Color::Rgb(..) | Color::Indexed(_)),
+                        "{:?} at {},{} is absolute",
+                        color,
+                        x,
+                        y
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -950,6 +964,37 @@ mod tests {
                 budget
             );
         }
+    }
+
+    /// A bar is data, so it looks the same whichever row the cursor is on: only the
+    /// background behind it comes from the row.
+    #[test]
+    fn the_gauge_keeps_its_colors_on_the_cursor_row() {
+        let mut app = app();
+        app.handle_key(KeyEvent::from(KeyCode::Down));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        terminal.draw(|f| ui(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Row 4 is a/, now the cursor row; row 5 is b/. Both have bar under x=46 and
+        // under the percentage at x=52, in the second gauge.
+        for x in [46, 52] {
+            assert_eq!(
+                buf[(x, 4)].fg,
+                buf[(x, 5)].fg,
+                "x={} is a different color on the cursor row",
+                x
+            );
+            assert_eq!(buf[(x, 4)].modifier, buf[(x, 5)].modifier, "x={}", x);
+        }
+
+        // The row still shades behind the bar, but not behind the percentage, which
+        // reverses the terminal's own pair so it reads on any of them.
+        assert_eq!(buf[(46, 4)].bg, Color::DarkGray);
+        assert_eq!(buf[(46, 5)].bg, Color::Reset);
+        assert_eq!(buf[(52, 4)].bg, Color::Reset);
+        assert_eq!(buf[(52, 5)].bg, Color::Reset);
     }
 
     /// The status area lives in the bottom border and must not disturb the rest of it.
