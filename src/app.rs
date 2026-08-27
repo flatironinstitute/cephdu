@@ -64,6 +64,17 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    /// The name as shown to a person, marked the way `ls -F` marks: a trailing `@`
+    /// for a symlink. The directory's `/` is already part of `name` instead, because
+    /// the parseable format documents it and `/` is the one byte a filename cannot
+    /// contain. `@` can, so it stays out of that stream and is applied here.
+    pub fn display_name(&self) -> String {
+        match self.kind {
+            EntryKind::Symlink => format!("{}@", self.name),
+            _ => self.name.clone(),
+        }
+    }
+
     fn from(path: PathBuf, stat: Metadata) -> Self {
         let kind = if stat.is_dir() {
             EntryKind::Dir
@@ -889,6 +900,30 @@ mod tests {
         app.cd(&PathBuf::from(".."));
         let selected = app.dir_listing.selected().unwrap();
         assert_eq!(app.dir_listing.get(selected).name, "src/");
+    }
+
+    /// Symlinks are marked where a person reads the name, not in the machine stream:
+    /// a filename may contain `@`, so it cannot signal anything there.
+    #[test]
+    fn symlinks_are_marked_for_display_only() {
+        let link = DirEntry {
+            kind: EntryKind::Symlink,
+            ..entry("target", 10)
+        };
+        assert_eq!(link.display_name(), "target@");
+        assert_eq!(link.name, "target");
+
+        // A file whose name ends in @ is left alone, and a directory keeps the `/`
+        // that `from` already gave it.
+        let odd = DirEntry {
+            kind: EntryKind::File,
+            ..entry("notes@", 10)
+        };
+        assert_eq!(odd.display_name(), "notes@");
+
+        let dir = entry("data/", 10);
+        assert_eq!(dir.kind, EntryKind::Dir);
+        assert_eq!(dir.display_name(), "data/");
     }
 
     /// The sort keys and the CLI sort flags share these directions, so they cannot

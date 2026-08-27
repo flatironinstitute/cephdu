@@ -99,7 +99,7 @@ fn write_human(
             rentries(entry),
             ctime,
             owner(entry),
-            entry.name,
+            entry.display_name(),
             swidth = size_width,
             rwidth = rentries_width,
             cwidth = CTIME_FMT_WIDTH,
@@ -245,6 +245,29 @@ mod tests {
             "ragged name column in\n{}",
             out
         );
+    }
+
+    /// The human format marks a symlink; the parseable one must not, since a name may
+    /// contain `@` and a parser has no way to tell a mark from a character.
+    #[test]
+    fn only_the_human_format_marks_symlinks() {
+        let listing = DirListing::from_entries(
+            vec![
+                entry("link", EntryKind::Symlink, Some(8), None),
+                entry("plain", EntryKind::File, Some(9), None),
+            ],
+            false,
+            SortMode::Reversed(SortField::Size),
+            false,
+        );
+
+        let human = render(&listing, &Format::Human { exact: false });
+        assert!(human.contains("link@"), "{}", human);
+        assert!(!human.contains("plain@"), "{}", human);
+
+        let parseable = render(&listing, &Format::Parseable);
+        assert!(!parseable.contains('@'), "{}", parseable);
+        assert!(parseable.contains("\tlink\n"), "{}", parseable);
     }
 
     /// Display order follows the sort mode, and reversal must not be re-sorted in.
