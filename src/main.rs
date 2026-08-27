@@ -17,7 +17,7 @@ mod popup;
 mod ui;
 
 use crate::{
-    app::{App, SortField, SortMode},
+    app::{App, Options, SortField, SortMode},
     flat::Format,
     ui::ui,
 };
@@ -27,32 +27,37 @@ const DEFAULT_DIR: Option<&str> = option_env!("CEPHDU_DEFAULT_DIR");
 /// Display ceph space and file count (inode) usage in an interactive terminal
 #[derive(Parser)]
 #[clap(after_help = r#"
-The interactive interface is used when stdout is a terminal. Otherwise a flat
-listing is printed, as if --parseable had been given.
+The interactive interface (terminal user interface, or TUI) is used when stdout is a
+terminal. Otherwise, --parseable is enabled by default, so that the output can be processed
+through pipes and redirects.
 
-Flat listings have one row per entry: size, file count, modified time, user,
-group, name, with '-' for values the filesystem does not provide. --flat writes
-them with units for reading; --parseable writes raw tab-separated values in a
-format that does not vary with the terminal.
+Parseable listings have one row per entry: size, file count, change time, user,
+group, name. In flat mode, columns the filesystem does not provide or were not requested
+are skipped. In parseable mode, they are rendered as -. --flat writes with units for reading;
+--parseable writes raw tab-separated values.
 
-Listings are sorted largest first unless one of the sort flags is given. Those
-mirror the interface's sort keys, and apply to both output modes. -r reverses
-whichever order is in effect, so 'cephdu -r' reads smallest first, and -d groups
-directories ahead of files whatever the field and direction.
+Listings are sorted by bytes unless one of the sort flags is given. Those mirror the TUI's
+sort keys and apply to both TUI and flat. -r reverses whichever order is in effect, so
+'cephdu -r' reads smallest first. -d groups all directories before files.
 
 -e prints sizes and counts in full rather than scaled to a unit. The parseable
 format is always exact, so -e has no effect there.
 
-The interface names as few colors as it can, inheriting the terminal's own, so it
-suits a light terminal as well as a dark one. Flat listings are never colored.
+-l (implies flat) reads the two things that cost extra syscalls: the owner and a
+directory's recursive time. Without it a directory needs no stat at all -- its size
+and count are xattrs and its kind comes from readdir -- and makes one fewer xattr
+call. A file's time comes from the stat it needs anyway for its size, so it is always
+shown, and the parseable format marks what was not read '-' so that its fields never
+move.
 
 Note the following differences from 'ls -l':
-  * The time shown is recursive for directories
   * The time shown is the time at which a file's contents *or* its metadata
-    have been modified (ctime). This is subtly different from 'ls -l', where
-    the timestamp only changes if the contents are modified (mtime)
+    have been changed (ctime). 'ls -l' shows the time at which the contents were
+    modified (mtime).
+  * The time shown for a directory is the recursive ctime (rctime), including the
+    directory itself. New directories do not have an rctime.
   * The size shown is recursive for directories (may also be true for
-    'ls -l' depending on ceph deployment)
+    'ls -l' depending on ceph deployment).
 "#)]
 struct Cli {
     /// Path to the directory to display
@@ -62,12 +67,12 @@ struct Cli {
     #[arg(short, long)]
     flat: bool,
 
-    /// Print a flat text listing of raw values, for parsing
+    /// Print a flat text listing of raw values for parsing
     #[arg(short, long)]
     parseable: bool,
 
     /// Use the interactive interface even if stdout is not a terminal
-    #[arg(long, conflicts_with_all = ["flat", "parseable"])]
+    #[arg(long, conflicts_with_all = ["flat", "parseable", "long"])]
     tui: bool,
 
     #[command(flatten)]
@@ -84,6 +89,10 @@ struct Cli {
     /// Show sizes and counts in full instead of scaled to a unit
     #[arg(short, long)]
     exact: bool,
+
+    /// Show the owner and directory times, which cost extra syscalls. Implies -f.
+    #[arg(short, long)]
+    long: bool,
 }
 
 /// The startup sort order, mirroring the interface's sort keys. Each field starts
@@ -108,7 +117,7 @@ struct SortFlags {
     #[arg(short = 'u', long)]
     owner: bool,
 
-    /// Sort by modification time
+    /// Sort by change time
     #[arg(short, long)]
     time: bool,
 }
@@ -143,30 +152,37 @@ fn main() -> Result<()> {
     } else {
         args.sort.mode()
     };
-
     // The interactive interface draws to stdout, so it can only work on a terminal.
     // Whatever is reading a pipe or a file is more often a program than a person,
     // hence the parseable format there. --tui is honored anyway, for pty-wrapping
     // tools that defeat the detection.
     let format = if args.parseable {
         Some(Format::Parseable)
-    } else if args.flat {
+    } else if args.flat || args.long {
         Some(Format::Human { exact: args.exact })
     } else if !args.tui && !std::io::stdout().is_terminal() {
         Some(Format::Parseable)
     } else {
         None
     };
+
+    let options = Options {
+        sort_mode,
+        dirs_first: args.dirs_first,
+        // Ordering by one of these needs it read, whether or not it is shown.
+        owners: args.long || *sort_mode.field() == SortField::Owner,
+        times: args.long || *sort_mode.field() == SortField::CTime,
+    };
+
     if let Some(format) = format {
-        return run_flat(&path, &format, sort_mode, args.dirs_first);
+        return run_flat(&path, &format, options);
     }
 
-    let mut app = App::new(Some(&path), sort_mode, args.dirs_first).unwrap_or_else(|e| {
-        let mut app = App::new(Some(&PathBuf::from(".")), sort_mode, args.dirs_first)
-            .unwrap_or_else(|_| {
-                eprintln!("Error opening {:?}: {}", path, e);
-                std::process::exit(1);
-            });
+    let mut app = App::new(Some(&path), options).unwrap_or_else(|e| {
+        let mut app = App::new(Some(&PathBuf::from(".")), options).unwrap_or_else(|_| {
+            eprintln!("Error opening {:?}: {}", path, e);
+            std::process::exit(1);
+        });
 
         if path_was_explicit {
             app.message(Some(Message {
@@ -193,8 +209,8 @@ fn main() -> Result<()> {
 /// Print a flat listing of `path`. Unlike the interactive interface, this doesn't
 /// fall back to the current directory on failure: a script needs to see the error
 /// rather than a listing of somewhere else.
-fn run_flat(path: &Path, format: &Format, sort_mode: SortMode, dirs_first: bool) -> Result<()> {
-    let listing = app::DirListing::from(path, sort_mode, dirs_first).unwrap_or_else(|e| {
+fn run_flat(path: &Path, format: &Format, options: Options) -> Result<()> {
+    let listing = app::DirListing::from(path, options).unwrap_or_else(|e| {
         eprintln!("Error opening {:?}: {}", path, e);
         std::process::exit(1);
     });

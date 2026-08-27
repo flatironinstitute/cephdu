@@ -130,7 +130,47 @@ fn empty_directory_counts_zero() {
     fs::remove_dir_all(&dir).unwrap();
 }
 
-/// Off Ceph these columns are blank; here they must carry real values.
+/// Creating a directory sets its ctime but never its rctime, which the MDS only
+/// fills in on the first rstat update. So a directory nothing has happened in since
+/// it was made reports zero, which renders as the epoch -- idiomatic for a Unix
+/// timestamp that was never set, and passed through rather than hidden.
+#[test]
+fn a_pristine_directory_reports_no_recursive_time() {
+    let Some(dir) = scratch("pristine") else {
+        eprintln!("SKIP a_pristine_directory_reports_no_recursive_time: no CephFS available");
+        return;
+    };
+
+    fs::create_dir(dir.join("pristine")).unwrap();
+    write(dir.join("touched/f"), 10);
+
+    let out = Command::new(BIN)
+        .args(["--parseable", "-l", dir.to_str().unwrap()])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    for line in stdout.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let (time, name) = (f[2], f[5]);
+        if name == "pristine/" {
+            assert_eq!(
+                time, "0",
+                "creation set an rctime after all, or zero was hidden: {}",
+                line
+            );
+        } else {
+            time.parse::<u64>()
+                .unwrap_or_else(|_| panic!("{} has no time: {}", name, line));
+        }
+    }
+
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Off Ceph these columns are blank; here they must carry real values. The time is
+/// the exception: a directory's is a third of the xattr round trips, so it is read
+/// only when asked for.
 #[test]
 fn human_output_shows_directory_sizes() {
     let Some(dir) = scratch("human") else {
@@ -141,17 +181,23 @@ fn human_output_shows_directory_sizes() {
     write(dir.join("data/big"), 2_000_000);
     assert_listing_settles(&dir, &[("2000000", "1", "data/")]);
 
-    let out = Command::new(BIN)
-        .args(["--flat", dir.to_str().unwrap()])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.contains("2.0 MB"), "{}", stdout);
-    assert!(
-        !stdout.contains('-'),
-        "a column was unavailable: {}",
-        stdout
-    );
+    let human = |args: &[&str]| -> String {
+        let out = Command::new(BIN)
+            .args(args)
+            .arg(dir.to_str().unwrap())
+            .output()
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+
+    let plain = human(&["--flat"]);
+    assert!(plain.contains("2.0 MB"), "{}", plain);
+    assert!(plain.contains("data/"), "{}", plain);
+
+    // -l reads the recursive time as well, so nothing is left unavailable.
+    let long = human(&["--flat", "-l"]);
+    assert!(long.contains("2.0 MB"), "{}", long);
+    assert!(!long.contains('-'), "a column was unavailable: {}", long);
 
     fs::remove_dir_all(&dir).unwrap();
 }

@@ -31,9 +31,13 @@ pub fn write_listing(
 
     match format {
         Format::Parseable => write_parseable(&entries, out),
-        Format::Human { exact } => {
-            write_human(&entries, current_year, Numbers::from_exact(*exact), out)
-        }
+        Format::Human { exact } => write_human(
+            &entries,
+            current_year,
+            Numbers::from_exact(*exact),
+            listing.options().owners,
+            out,
+        ),
     }
 }
 
@@ -60,6 +64,7 @@ fn write_human(
     entries: &[&DirEntry],
     current_year: isize,
     numbers: Numbers,
+    owners: bool,
     out: &mut impl Write,
 ) -> std::io::Result<()> {
     let width = |f: &dyn Fn(&DirEntry) -> String| -> usize {
@@ -84,7 +89,9 @@ fn write_human(
 
     let size_width = width(&size);
     let rentries_width = width(&rentries);
-    let owner_width = width(&owner);
+    // Omitted rather than filled with placeholders when it wasn't read: this format
+    // is for reading, and a column of dashes says nothing.
+    let owner_width = if owners { width(&owner) } else { 0 };
 
     for entry in entries {
         let ctime = entry
@@ -92,18 +99,23 @@ fn write_human(
             .map(|c| ctime_str(c, current_year))
             .unwrap_or(MISSING.to_string());
 
+        let owner = if owners {
+            format!("  {:<width$}", owner(entry), width = owner_width)
+        } else {
+            String::new()
+        };
+
         writeln!(
             out,
-            "{:>swidth$}  {:>rwidth$}  {:>cwidth$}  {:<owidth$}  {}",
+            "{:>swidth$}  {:>rwidth$}  {:>cwidth$}{}  {}",
             size(entry),
             rentries(entry),
             ctime,
-            owner(entry),
+            owner,
             entry.display_name(),
             swidth = size_width,
             rwidth = rentries_width,
             cwidth = CTIME_FMT_WIDTH,
-            owidth = owner_width,
         )?;
     }
     Ok(())
@@ -112,7 +124,7 @@ fn write_human(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{EntryKind, SortField, SortMode};
+    use crate::app::{EntryKind, Options, SortField, SortMode};
 
     fn entry(
         name: &str,
@@ -146,8 +158,14 @@ mod tests {
                 entry("notes.txt", EntryKind::File, Some(120), None),
             ],
             true,
-            SortMode::Reversed(SortField::Size),
-            false,
+            Options {
+                sort_mode: SortMode::Reversed(SortField::Size),
+                dirs_first: false,
+                // These entries carry owners and times, so the listing was read
+                // with both.
+                owners: true,
+                times: true,
+            },
         )
     }
 
@@ -188,8 +206,14 @@ mod tests {
                 ..entry("opaque/", EntryKind::Dir, None, None)
             }],
             false,
-            SortMode::Reversed(SortField::Size),
-            false,
+            Options {
+                sort_mode: SortMode::Reversed(SortField::Size),
+                dirs_first: false,
+                // These entries carry owners and times, so the listing was read
+                // with both.
+                owners: true,
+                times: true,
+            },
         );
         assert_eq!(
             render(&listing, &Format::Parseable),
@@ -257,8 +281,14 @@ mod tests {
                 entry("plain", EntryKind::File, Some(9), None),
             ],
             false,
-            SortMode::Reversed(SortField::Size),
-            false,
+            Options {
+                sort_mode: SortMode::Reversed(SortField::Size),
+                dirs_first: false,
+                // These entries carry owners and times, so the listing was read
+                // with both.
+                owners: true,
+                times: true,
+            },
         );
 
         let human = render(&listing, &Format::Human { exact: false });
@@ -268,6 +298,49 @@ mod tests {
         let parseable = render(&listing, &Format::Parseable);
         assert!(!parseable.contains('@'), "{}", parseable);
         assert!(parseable.contains("\tlink\n"), "{}", parseable);
+    }
+
+    /// The owner column appears only when it was read. The human format drops it
+    /// rather than filling it with placeholders; the parseable one keeps its six
+    /// fields and marks them unavailable, so field offsets never move.
+    #[test]
+    fn the_owner_column_appears_only_when_it_was_read() {
+        let unread = DirListing::from_entries(
+            vec![DirEntry {
+                user: None,
+                group: None,
+                ..entry("notes.txt", EntryKind::File, Some(120), None)
+            }],
+            false,
+            Options::default(),
+        );
+        let read = DirListing::from_entries(
+            vec![entry("notes.txt", EntryKind::File, Some(120), None)],
+            false,
+            Options {
+                owners: true,
+                ..Options::default()
+            },
+        );
+
+        let human_unread = render(&unread, &Format::Human { exact: false });
+        let human_read = render(&read, &Format::Human { exact: false });
+        assert!(human_read.contains("alice:scc"), "{}", human_read);
+        assert!(!human_unread.contains("alice"), "{}", human_unread);
+        assert!(
+            human_unread.len() < human_read.len(),
+            "the column was not dropped: {:?}",
+            human_unread
+        );
+
+        for listing in [&unread, &read] {
+            let out = render(listing, &Format::Parseable);
+            assert_eq!(out.trim_end().split('\t').count(), 6, "{}", out);
+        }
+        assert!(
+            render(&unread, &Format::Parseable).contains("\t-\t-\t"),
+            "the unread owner is not marked"
+        );
     }
 
     /// Display order follows the sort mode, and reversal must not be re-sorted in.

@@ -487,10 +487,87 @@ fn symlinks_are_marked_in_the_human_format_only() {
     );
 }
 
+/// The owner costs a stat for every directory and a name lookup for every distinct
+/// owner, so it is read only when asked for.
+#[test]
+fn the_owner_is_read_only_with_the_flag() {
+    let dir = tree("owner");
+    let path = path_arg(&dir);
+
+    let plain = run(&["-p", &path]);
+    assert!(plain.success, "{}", plain.stderr);
+    for row in plain.rows() {
+        assert_eq!(row[3], "-", "an owner was read without -l: {:?}", row);
+        assert_eq!(row[4], "-", "a group was read without -l: {:?}", row);
+    }
+
+    let long = run(&["-p", "-l", &path]);
+    assert!(long.success, "{}", long.stderr);
+    for row in long.rows() {
+        assert_ne!(row[3], "-", "-l did not read the owner: {:?}", row);
+        assert_ne!(row[4], "-", "-l did not read the group: {:?}", row);
+    }
+    assert_eq!(
+        long.stdout,
+        run(&["-p", "--long", &path]).stdout,
+        "long forms disagree"
+    );
+
+    // -l implies --flat: into a pipe, where the default is parseable, it still gives
+    // the human format.
+    assert_eq!(
+        run(&["-l", &path]).stdout,
+        run(&["-f", "-l", &path]).stdout,
+        "-l did not imply --flat"
+    );
+    assert!(
+        !run(&["-l", &path]).stdout.contains('\t'),
+        "-l gave the parseable format"
+    );
+
+    // The human format drops the column rather than filling it with placeholders.
+    let human = run(&["-f", &path]);
+    let human_long = run(&["-f", "-l", &path]);
+    let first = |o: &Output| o.stdout.lines().next().unwrap().len();
+    assert!(
+        first(&human) < first(&human_long),
+        "the column was not dropped:\n{}",
+        human.stdout
+    );
+    // Not a bare ':' check: a ctime in the current year contains one.
+    let owner = long.rows()[0][3].to_string();
+    assert!(
+        !human.stdout.contains(&owner),
+        "{} appeared without -l:\n{}",
+        owner,
+        human.stdout
+    );
+    assert!(human_long.stdout.contains(&owner), "{}", human_long.stdout);
+}
+
+/// A file's time comes from the stat it needs anyway, so it is there either way. A
+/// directory's is an xattr round trip, and tests/ceph.rs covers it where there is one
+/// to find.
+#[test]
+fn a_file_keeps_its_time_without_the_flag() {
+    let dir = tree("times");
+    let path = path_arg(&dir);
+
+    for args in [vec!["-p", &path], vec!["-p", "-l", &path]] {
+        let out = run(&args);
+        assert!(out.success, "{}", out.stderr);
+        for row in out.rows().iter().filter(|r| !r[5].ends_with('/')) {
+            row[2]
+                .parse::<u64>()
+                .unwrap_or_else(|_| panic!("{:?}: file has no time in {:?}", args, row));
+        }
+    }
+}
+
 #[test]
 fn tui_conflicts_with_flat_flags() {
     let dir = tree("conflict");
-    for flag in ["--flat", "--parseable"] {
+    for flag in ["--flat", "--parseable", "--long"] {
         let out = run(&["--tui", flag, &path_arg(&dir)]);
         assert!(!out.success, "--tui {} was accepted", flag);
     }
