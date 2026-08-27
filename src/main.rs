@@ -43,6 +43,9 @@ directories ahead of files whatever the field and direction.
 -e prints sizes and counts in full rather than scaled to a unit. The parseable
 format is always exact, so -e has no effect there.
 
+The interface names as few colors as it can, inheriting the terminal's own, so it
+suits a light terminal as well as a dark one. Flat listings are never colored.
+
 Note the following differences from 'ls -l':
   * The time shown is recursive for directories
   * The time shown is the time at which a file's contents *or* its metadata

@@ -126,6 +126,34 @@ Other things worth knowing before editing:
   and copies a window of it into the block's inner area. That scrolls every column identically and keeps the
   border and its titles fixed, at the cost of one buffer per frame. The window is why `hscroll` is clamped during
   rendering rather than in the key handler.
+- The interface sets almost no colors: backgrounds and text are left to the terminal, so it suits a light
+  terminal as well as a dark one. `ERROR_STYLE` and `WARNING_STYLE` in [ui.rs](src/ui.rs) are the only named
+  colors, and they are named for their meaning. Never reach for `Color::Rgb`/`Indexed` — those don't follow the
+  user's terminal theme, and `the_interface_names_no_absolute_colors` renders a frame and fails if any appear.
+  A user-selectable palette was tried and removed; see the history if it comes back up.
+- The cursor row is shaded with a named background pair (`SELECTED_STYLE`: grey behind white) plus the `> `
+  marker, and deliberately *not* bold — bold brightens the text on top of the color change, so the row reads as
+  lightening rather than as marked. Grey rather than blue because `Color::Blue` is ANSI 4, already the darkest blue in
+  the 16, so on a theme that renders it brightly there is nothing left to raise the contrast with; `DarkGray` is
+  the only named color darker than it that won't merge into a dark terminal's own background. Going darker still means leaving
+  the 16 for `Indexed`/`Rgb`, defensible only here, where both halves of the pair are named and so carry their
+  own contrast.
+  The white foreground is for light terminals: with an inherited foreground the text would be dark on a dark
+  band there. Inheriting it instead is the one-line change that keeps the text from shifting color at all, at
+  that cost.
+  Two alternatives were tried and rejected. Reverse video adapts to any terminal for free, but it inverts the
+  gauges: a `█` reversed is drawn in the background color while a reversed empty cell paints the foreground
+  across its full width, so a bar shows the wrong value. Marker-and-bold alone, with no background, reads as too
+  subtle.
+- The gauges opt out of the cursor row's styling: `bar` in `gauge()` pins the foreground to `Color::Reset` and
+  removes `BOLD`, so a bar is the same color on every row and the column reads as one chart. Only the background
+  behind it comes from the row, which is what keeps the shading continuous across the row. The percentage over
+  the bar reverses the terminal's own pair rather than the row's, since reversing the cursor row's blue would put
+  blue text on the bar — fine on a dark terminal, barely legible on a light one.
+- Terminal light/dark detection is deliberately absent: neither ratatui nor crossterm can do it (checked in
+  0.29/0.28), and the mechanism is an OSC 11 query, which needs raw-mode care, a timeout, and tmux passthrough.
+  `terminal-colorsaurus` or `terminal-light` would be the crates if it is ever wanted -- but inheriting the
+  terminal's colors makes detection unnecessary in the first place.
 - `POPUP_TEXT_HEIGHT` in [ui.rs](src/ui.rs) is a fixed constant that popup scroll clamping and scrollbar state
   depend on; the popup is not sized to the terminal.
 - The gauge in `gauge()` draws the percentage text *inside* the bar with inverted colors on the overlapping
