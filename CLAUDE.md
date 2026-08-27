@@ -14,7 +14,7 @@ pre-commit run --all-files
 cargo test
 cargo test --bin cephdu          # unit tests only (fast, no filesystem)
 cargo test <substring>           # one test, e.g. cargo test renders_the_listing
-cargo test -- --nocapture        # needed to see the SKIP notices from tests/ceph.rs
+cargo test -- --nocapture        # SKIP notices from tests/ceph.rs, syscall table from tests/syscalls.rs
 CEPHDU_TEST_DIR=<ceph path> cargo test --test ceph
 ```
 
@@ -61,7 +61,8 @@ redirected — hence flat mode is implied when stdout isn't a terminal, with `--
 pty-wrapping tools. Two properties of flat mode are deliberate and worth preserving:
 
 - `--flat` (`-f`) selects the format with units and `--parseable` (`-p`) the raw one. Neither varies with the
-  terminal, so parsers see the same bytes however the tool is invoked. This is also why flat mode has no column-visibility flags: the TUI's `u`/`t` toggles exist
+  terminal, so parsers see the same bytes however the tool is invoked. This is also why flat mode has no
+  column-visibility flags: the TUI's `u`/`t` toggles exist
   because terminal width is scarce, a pipe has no such limit, and a fixed column set keeps field offsets stable.
   It also leaves the remaining `-<key>` short flags free for the startup sort flags in issue #11.
 - An implied flat listing (no flag, stdout not a terminal) is parseable rather than human, on the grounds that a
@@ -107,6 +108,35 @@ Other things worth knowing before editing:
   the size shown is the link's own (the length of the path it holds), a directory symlink sorts among the files,
   and `Enter` on one does nothing, since `try_cd` canonicalizes and going back through a symlink would need that
   reworked.
+- `Options` is what a read needs to know — sort mode, `dirs_first`, `owners` — and travels as one value rather
+  than a run of booleans, which is what `DirListing::from` and `App::new` take.
+- `DirListing::options.owners` records what that listing *was read with*, not what the next read should do. The
+  distinction matters: `toggle_owner` re-reads only when the listing never had owners, so hiding the column and
+  showing it again is free however many times, while `try_cd` builds the next read's options from
+  `App::needs()` so leaving with a column hidden doesn't make the next directory pay. Conflating the two made the
+  third press of `u` re-read; there are tests with sentinel values for both fields. `App::needs()` is also where
+  *ordering* by a field counts as needing it: sorting by owner or by time without reading them silently sorted
+  by nothing, which is a bug worth not reintroducing.
+- `-l` implies `--flat` and conflicts with `--tui`: a flat listing is the one with no way to ask later, while
+  the interface has `u` and `t`, which read on demand. That is why it selects a mode rather than being ignored
+  in one.
+- `owners` and `times` are off by default and are the deferred-read work for #7. They matter for very different
+  reasons, and the benchmark is the reason to keep them separate from the cheap fields: on ten thousand
+  directories a listing went 43s to 30s, and 84% of the remaining time is `lgetxattr` at 1.37ms a call. The
+  `statx` deferral is worth only ~4%, because CephFS's `readdir` prefetches inode metadata into the client cache
+  so the stat is served locally; the xattrs are not prefetched, so each is a round trip. Dropping `rctime` — one
+  of the three — is what bought the 12 seconds. Anything further has to come from issuing those calls
+  concurrently rather than one at a time (#18).
+- A directory needs a stat for *nothing else* than the owner: its size, count and time are the r-attrs and its
+  kind comes from readdir via
+  `DirEntry::file_type()`, which uses `d_type` and only falls back to a stat of its own on `DT_UNKNOWN` (CephFS
+  does return it — measured). A file still needs its stat for size and time, so for files the only saving is the
+  name lookup, which is why `DirEntry::from` takes `owners` separately from `stat` rather than deriving the
+  owner from whatever stat happens to be in hand. That saving is small: measured on Rusty, where nsswitch is
+  `files sss`, a real user resolves from SSSD's cache in ~18µs against 1.37ms for one `lgetxattr`, and only
+  *absent* uids are slow (~2.3ms) — a real directory has none. So the owner's cost is its per-directory stat,
+  not the lookup; don't reinstate the claim that it means an LDAP round trip.
+  [tests/syscalls.rs](tests/syscalls.rs) pins the resulting cost model and prices `-l`.
 - `rentries` has 1 subtracted because Ceph counts the directory itself. Specifically it is `rsubdirs` that
   includes the directory, since `rentries == rfiles + rsubdirs`; the non-recursive `ceph.dir.entries` has no such
   self-count.
@@ -142,7 +172,8 @@ Other things worth knowing before editing:
   marker, and deliberately *not* bold — bold brightens the text on top of the color change, so the row reads as
   lightening rather than as marked. Grey rather than blue because `Color::Blue` is ANSI 4, already the darkest blue in
   the 16, so on a theme that renders it brightly there is nothing left to raise the contrast with; `DarkGray` is
-  the only named color darker than it that won't merge into a dark terminal's own background. Going darker still means leaving
+  the only named color darker than it that won't merge into a dark terminal's own background. Going darker
+  still means leaving
   the 16 for `Indexed`/`Rgb`, defensible only here, where both halves of the pair are named and so carry their
   own contrast.
   The white foreground is for light terminals: with an inherited foreground the text would be dark on a dark
@@ -176,6 +207,16 @@ Other things worth knowing before editing:
   the unit forms fit in, which is what keeps the golden frame stable when the mode is off.
 - Frame rows contain three-byte box and block characters, so a test that locates a column with `str::rfind` gets
   a byte offset, not a screen column. Convert with `line[..byte].chars().count()`.
+- `ceph.dir.rctime` is the newest ctime anywhere in the subtree, *including* every directory's own: `chmod` on
+  the directory alone moves it, and so does `chmod` on any subdirectory (measured, not assumed — an earlier
+  version of the help text claimed it excluded the directory itself). It is a *propagated* value that starts at
+  zero, though: creating a directory sets its ctime but not its rctime, so one that nothing has happened in
+  since it was made reports zero and renders as the epoch. That is deliberate — the epoch is how a Unix
+  timestamp says "never set" — and common: a freshly created tree of empty directories shows it everywhere,
+  where `ls -l` shows a date, because `ls` shows the directory's *own* mtime and creation does set that.
+  Creating something *inside* a directory sets the parent's rctime, since that changes the parent's own ctime,
+  so it is only the leaves of a fresh tree that read zero. There is no third option to fall back on either:
+  CephFS exposes no birth time (`ls --time=birth` reports `?`).
 - Times shown are `rctime` for directories and `ctime` for files — deliberately ctime, not mtime; see the
   `after_help` text in [main.rs](src/main.rs).
 
@@ -193,6 +234,15 @@ dependency, deliberately — cargo already provides both paths.
   from; only the version line is excluded from the golden. Regenerate a golden by printing the frame lines with
   `{:?}` rather than hand-editing the box-drawing characters. Both optional columns don't fit in 80 columns, so
   that one test renders at 120.
+- [tests/syscalls.rs](tests/syscalls.rs) — the cost of a listing in syscalls, via `strace -c`, for #7. It
+  measures a *slope*: two trees differing by a known number of entries, counts subtracted, so the fixed cost of
+  starting a process cancels and the numbers don't move with the libc or kernel underneath. Today a listing costs
+  one `statx` per file, two `lgetxattr` per directory and no stat for a directory at all, and nothing else
+  scales — that last part is the
+  assertion worth keeping, since an accidental per-entry syscall is what makes a large directory slow. Skips
+  without strace or ptrace permission. It cannot see the Ctrl-C poll in `ls()`, which only costs a syscall when
+  crossterm's event source initialises, and that needs a controlling terminal: under a test runner /dev/tty
+  fails with ENXIO, so the interface may pay one more syscall per entry than the harness reports.
 - [tests/ceph.rs](tests/ceph.rs) — the only coverage of the xattrs themselves, and the only tests that can't run
   in CI. They skip (not fail) with a `SKIP` notice when no CephFS is available, so `cargo test` is green
   everywhere. The MDS updates recursive stats asynchronously, so assertions poll until the tree settles;

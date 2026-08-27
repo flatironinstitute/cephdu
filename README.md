@@ -54,16 +54,17 @@ Arguments:
 
 Options:
   -f, --flat        Print a flat text listing, with units, instead of the interactive interface
-  -p, --parseable   Print a flat text listing of raw values, for parsing
+  -p, --parseable   Print a flat text listing of raw values for parsing
       --tui         Use the interactive interface even if stdout is not a terminal
   -n, --name        Sort by name
   -s, --size        Sort by size
   -c, --count       Sort by file count
   -u, --owner       Sort by owner
-  -t, --time        Sort by modification time
+  -t, --time        Sort by change time
   -r, --reverse     Reverse the sort order
   -d, --dirs-first  List directories before files
   -e, --exact       Show sizes and counts in full instead of scaled to a unit
+  -l, --long        Show the owner and directory times, which cost extra syscalls. Implies -f
   -h, --help        Print help
 ```
 
@@ -71,8 +72,9 @@ Options:
 Listings are sorted largest first unless one of `-n`, `-s`, `-c`, `-u` or `-t` is
 given, which choose the field to sort on. They apply to both the interactive
 interface and flat listings, and each field starts in the direction its sort key
-uses in the interface: sizes, counts and times read most-first, names and owners
-read ascending. In the interface, pressing the field's key reverses it from there.
+uses in the interface: sizes, counts and change times read most-first, names and
+owners read ascending. In the interface, pressing the field's key reverses it from
+there.
 
 `-r` reverses whichever order is in effect and combines with the field flags, so
 `cephdu -r` reads smallest first and `cephdu -nr` reverses the name order.
@@ -104,6 +106,43 @@ that directories already carry. The size shown is the symlink's own — the leng
 the path it holds — rather than its target's, and a symlink to a directory is listed
 among the files. Following one is not implemented yet.
 
+### What costs extra, and `-l`
+Two things are not read unless something asks for them, because each one costs extra
+syscalls — and on Ceph each of those is a round trip to the metadata server:
+
+* **The owner.** It is the only thing a directory needs a `stat` for — size and
+  count are xattrs and the kind comes from `readdir`. Turning the uid into a name is
+  cheap by comparison, and happens once per distinct owner rather than once per
+  entry.
+* **A directory's recursive time.** It is one of the three xattr reads a directory
+  otherwise makes, and those reads dominate a large listing: on ten thousand
+  directories, `43s` with `-l` against `30s` without.
+
+So without `-l` a directory costs two xattr reads and no `stat` at all, and a uid is
+never turned into a name.
+
+A file's size and change time come from the one `stat` it needs regardless, so they
+are always shown.
+
+`-l` implies `-f`, since a flat listing is the one with no way to ask later, and so
+it conflicts with `--tui`. Without it, `--flat` drops the owner column, while every
+other column stays and shows `-` for what is missing; `--parseable` always keeps all
+six fields.
+
+The interface asks instead: `u` and `t` read what they need when pressed and keep it
+afterwards, so toggling a column off and on costs nothing. Moving to another
+directory or refreshing reads afresh, and reads only what the visible columns and the
+current sort need — so ordering by owner or by change time fetches it whether or not
+the column is on screen.
+
+A directory's time is Ceph's `rctime`: the newest ctime anywhere beneath it, its own
+included, so changing only its permissions moves it. It is a propagated value that
+starts at zero — creating a directory does not give it one — so a directory nothing
+has happened in since it was made shows the epoch, the usual way a Unix timestamp
+says it was never set. `ls -l` shows a date there instead, because it shows the
+directory's *own* mtime, which creation does set. Creating something inside a
+directory does set the parent's, so only the leaves of a fresh tree read the epoch.
+
 ### Reading the border
 The top border shows the current path on the left and the directory's totals on
 the right. A path too long for the border loses its start, marked with `…`, so
@@ -126,7 +165,7 @@ interface, with the same units the interface uses:
 
 `--parseable` prints the same listing as raw values instead, one row of six
 tab-separated fields per entry — size in bytes, recursive entry count,
-modification time in Unix seconds, user, group, and name — with `-` for anything
+change time in Unix seconds, user, group, and name — with `-` for anything
 the filesystem doesn't provide (recursive values are only available on Ceph).
 Directory names keep their trailing `/`, and `..` is not listed. Symlinks are *not*
 marked here: a filename may contain `@`, so a parser could not tell a mark from a
@@ -159,6 +198,9 @@ cargo test
 The tests in `tests/ceph.rs` cover the recursive xattrs, so they need a CephFS
 mount and skip themselves when there isn't one. They put a scratch tree in
 `/mnt/ceph/users/$USER` by default; set `CEPHDU_TEST_DIR` to use somewhere else.
+
+`tests/syscalls.rs` counts how many syscalls a listing costs, using `strace`, and
+skips without it. `cargo test -- --nocapture` prints the table.
 
 ## Availability on Flatiron Institute Clusters
 
