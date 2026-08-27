@@ -22,7 +22,7 @@ use crate::app::EntryKind;
 use crate::app::ListingStats;
 use crate::app::Message;
 use crate::app::MessageKind;
-use crate::format::{CTIME_FMT_WIDTH, ctime_str, rentries_str, size_str};
+use crate::format::{CTIME_FMT_WIDTH, Numbers, ctime_str};
 use crate::popup::Popup;
 
 const SELECTED_BG_COLOR: Color = SLATE.c700;
@@ -45,13 +45,21 @@ const POPUP_BG_COLOR: Color = SLATE.c950;
 pub const POPUP_TEXT_HEIGHT: usize = 10;
 
 const GAUGE_WIDTH: usize = 20;
+/// Minimum widths of the size and count columns. The unit forms never exceed these,
+/// so only exact values widen them.
+const SIZE_WIDTH: usize = 8;
+const RENTRIES_WIDTH: usize = 7;
+
 /// The widths and number formatting a frame's rows share. Measured once from the
 /// whole listing, since a column is only as narrow as its widest value.
 struct Columns {
     gauge: usize,
+    size: usize,
+    rentries: usize,
     user: usize,
     group: usize,
     ctime: usize,
+    numbers: Numbers,
     current_year: isize,
     show_owner: bool,
     show_ctime: bool,
@@ -68,12 +76,13 @@ impl App {
 
     fn render_list(&mut self, area: Rect, buf: &mut Buffer) {
         let cols = self.columns();
+        let numbers = cols.numbers;
 
         let title = Line::from(format!(
             " {} ━━ {}, {} files ",
             self.cwd.to_str().unwrap_or("[invalid UTF-8]"),
-            size_str(Some(self.dir_listing.stats.total_size), false),
-            rentries_str(Some(self.dir_listing.stats.total_rentries), false)
+            numbers.size(Some(self.dir_listing.stats.total_size), false),
+            numbers.count(Some(self.dir_listing.stats.total_rentries), false)
         ))
         .fg(TEXT_FG_COLOR)
         .bold();
@@ -136,6 +145,8 @@ impl App {
     }
 
     fn columns(&self) -> Columns {
+        let numbers = Numbers::from_exact(self.exact);
+
         let widest = |f: &dyn Fn(&DirEntry) -> String| -> usize {
             self.dir_listing
                 .iter_entries()
@@ -155,9 +166,12 @@ impl App {
 
         Columns {
             gauge: GAUGE_WIDTH,
+            size: SIZE_WIDTH.max(widest(&|e| numbers.size(e.size, true))),
+            rentries: RENTRIES_WIDTH.max(widest(&|e| numbers.count(e.rentries, true))),
             user,
             group,
             ctime: if self.show_ctime { CTIME_FMT_WIDTH } else { 0 },
+            numbers,
             current_year: Local::now().year() as isize,
             show_owner: self.show_owner,
             show_ctime: self.show_ctime,
@@ -269,7 +283,11 @@ impl DirEntry {
         };
 
         spans.push(style_selected(Span::styled(
-            format!("{:>8} ┃", size_str(self.size, true)),
+            format!(
+                "{:>width$} ┃",
+                cols.numbers.size(self.size, true),
+                width = cols.size
+            ),
             text_color,
         )));
 
@@ -281,7 +299,11 @@ impl DirEntry {
         ));
 
         spans.push(style_selected(Span::styled(
-            format!("┃  {:>7} ┃", rentries_str(self.rentries, true)),
+            format!(
+                "┃  {:>width$} ┃",
+                cols.numbers.count(self.rentries, true),
+                width = cols.rentries
+            ),
             text_color,
         )));
 
@@ -684,6 +706,56 @@ mod tests {
             "'d' did not toggle back"
         );
         assert!(!shows_indicator(&mut app), "indicator outlived the mode");
+    }
+
+    #[test]
+    fn exact_key_switches_the_numbers() {
+        let mut app = app();
+        let text = |app: &mut App| frame(app).join("\n");
+
+        let units = text(&mut app);
+        assert!(units.contains("800.0 GB"), "{}", units);
+        assert!(units.contains("60.0 K"), "{}", units);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        let exact = text(&mut app);
+        assert!(exact.contains("800000000000"), "{}", exact);
+        assert!(exact.contains("60000"), "{}", exact);
+        assert!(!exact.contains("800.0 GB"), "{}", exact);
+        // The totals in the title follow the same setting.
+        assert!(exact.contains("100000 files"), "{}", exact);
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('e')));
+        assert_eq!(text(&mut app), units, "'e' did not toggle back");
+    }
+
+    /// Exact values are wider than any unit form, so the column grows. The rest of
+    /// the row has to stay aligned and inside the frame when it does.
+    #[test]
+    fn exact_widens_its_column_without_raggedness() {
+        let mut app = app();
+        app.exact = true;
+        let lines = frame(&mut app);
+
+        // Character columns, not byte offsets: the gauges are three bytes per cell.
+        let name_columns: Vec<usize> = lines[3..7]
+            .iter()
+            .zip(["..", "a/", "b/", "c.dat"])
+            .map(|(line, name)| {
+                let byte = line.rfind(name).unwrap();
+                line[..byte].chars().count()
+            })
+            .collect();
+        assert!(
+            name_columns.windows(2).all(|w| w[0] == w[1]),
+            "ragged name column:\n{}",
+            lines.join("\n")
+        );
+
+        // Rows 2 onwards are the bordered block, which spans the full width.
+        for line in &lines[2..] {
+            assert_eq!(line.chars().count(), 80, "{:?} is not full width", line);
+        }
     }
 
     /// The status area lives in the bottom border and must not disturb the rest of it.

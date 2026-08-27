@@ -119,7 +119,13 @@ Other things worth knowing before editing:
 - `POPUP_TEXT_HEIGHT` in [ui.rs](src/ui.rs) is a fixed constant that popup scroll clamping and scrollbar state
   depend on; the popup is not sized to the terminal.
 - The gauge in `gauge()` draws the percentage text *inside* the bar with inverted colors on the overlapping
-  region, using ⅛-block characters for sub-cell precision. Sizes/counts use base-1000 units.
+  region, using ⅛-block characters for sub-cell precision.
+- `format::Numbers` is the single switch between unit-scaled and exact rendering, and every size or count in
+  either output mode goes through it. Row widths are measured per frame in `App::columns()` rather than
+  hardcoded, because exact values are wider than any unit form; `SIZE_WIDTH`/`RENTRIES_WIDTH` are the minimums
+  the unit forms fit in, which is what keeps the golden frame stable when the mode is off.
+- Frame rows contain three-byte box and block characters, so a test that locates a column with `str::rfind` gets
+  a byte offset, not a screen column. Convert with `line[..byte].chars().count()`.
 - Times shown are `rctime` for directories and `ctime` for files — deliberately ctime, not mtime; see the
   `after_help` text in [main.rs](src/main.rs).
 

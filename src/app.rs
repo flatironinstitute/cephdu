@@ -23,6 +23,8 @@ pub struct App {
     pub popup: Option<Popup>,
     pub show_owner: bool,
     pub show_ctime: bool,
+    /// Show sizes and counts in full instead of scaled to a unit.
+    pub exact: bool,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
 }
@@ -216,6 +218,7 @@ impl App {
             popup: None,
             show_owner: false,
             show_ctime: false,
+            exact: false,
             message: None,
             highlighted: HashMap::new(),
         };
