@@ -98,6 +98,12 @@ the column reads as one chart. Flat listings are never colored.
 `NO_COLOR` is honored. Since it suppresses colors but not attributes, a colored
 band would simply disappear, so the cursor row falls back to bold when it is set.
 
+### Symlinks
+Symlinks are marked the way `ls -F` marks them, with a trailing `@` beside the `/`
+that directories already carry. The size shown is the symlink's own — the length of
+the path it holds — rather than its target's, and a symlink to a directory is listed
+among the files. Following one is not implemented yet.
+
 ### Reading the border
 The top border shows the current path on the left and the directory's totals on
 the right. A path too long for the border loses its start, marked with `…`, so
@@ -122,7 +128,9 @@ interface, with the same units the interface uses:
 tab-separated fields per entry — size in bytes, recursive entry count,
 modification time in Unix seconds, user, group, and name — with `-` for anything
 the filesystem doesn't provide (recursive values are only available on Ceph).
-Directory names keep their trailing `/`, and `..` is not listed.
+Directory names keep their trailing `/`, and `..` is not listed. Symlinks are *not*
+marked here: a filename may contain `@`, so a parser could not tell a mark from a
+character. Only the two human formats mark them.
 
 ```console
 ❯ cephdu --parseable /mnt/ceph/users/$USER | head -3

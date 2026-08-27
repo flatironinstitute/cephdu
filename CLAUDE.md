@@ -100,6 +100,13 @@ Other things worth knowing before editing:
   applies `as_reversed()` on top and so needs nothing per field. Uppercase short flags were considered for
   reversal and rejected: `U` and `T` are already the interface's sort keys for owner and time, so `-T` would have
   meant the opposite of pressing `T`.
+- Symlinks: `DirEntry::name` carries the directory `/` but *not* the symlink `@`, and the difference is
+  deliberate. `/` cannot occur in a filename, so it is unambiguous in the parseable stream, which documents it.
+  `@` can occur, so marking names with it there would be indistinguishable from a real character;
+  `display_name()` applies it and only the TUI and the human flat format call that. The rest of #12 is untouched:
+  the size shown is the link's own (the length of the path it holds), a directory symlink sorts among the files,
+  and `Enter` on one does nothing, since `try_cd` canonicalizes and going back through a symlink would need that
+  reworked.
 - `rentries` has 1 subtracted because Ceph counts the directory itself. Specifically it is `rsubdirs` that
   includes the directory, since `rentries == rfiles + rsubdirs`; the non-recursive `ceph.dir.entries` has no such
   self-count.

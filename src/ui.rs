@@ -359,7 +359,7 @@ impl DirEntry {
             )));
         }
 
-        spans.push(Span::raw(format!(" {}", self.name)));
+        spans.push(Span::raw(format!(" {}", self.display_name())));
 
         let line = Line::from(spans);
         ListItem::new(line)
@@ -1040,6 +1040,27 @@ mod tests {
         assert_eq!(buf[(46, 5)].bg, Color::Reset);
         assert_eq!(buf[(52, 4)].bg, Color::Reset);
         assert_eq!(buf[(52, 5)].bg, Color::Reset);
+    }
+
+    /// The listing marks a symlink the way `ls -F` does.
+    #[test]
+    fn symlinks_are_marked_in_the_listing() {
+        let mut app = app();
+        app.dir_listing = DirListing::from_entries(
+            vec![
+                entry("link", EntryKind::Symlink, 8, None),
+                entry("plain", EntryKind::File, 9, None),
+            ],
+            true,
+            DEFAULT_SORT_MODE,
+            false,
+        );
+
+        let names: Vec<String> = frame(&mut app)[4..6]
+            .iter()
+            .map(|l| l.split('┃').nth(5).unwrap().trim().to_string())
+            .collect();
+        assert_eq!(names, ["plain", "link@"]);
     }
 
     /// The status area lives in the bottom border and must not disturb the rest of it.

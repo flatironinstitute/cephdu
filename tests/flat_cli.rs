@@ -72,6 +72,23 @@ fn sort_tree(tag: &str) -> PathBuf {
     dir
 }
 
+/// A symlink to a file, one to a directory, a broken one, and -- the case that rules
+/// out marking names in the parseable stream -- a symlink whose own name contains @.
+fn link_tree(tag: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(tag);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("realdir")).unwrap();
+    fs::write(dir.join("realfile"), vec![0u8; 5_000]).unwrap();
+
+    let link = std::os::unix::fs::symlink;
+    link("realfile", dir.join("link-to-file")).unwrap();
+    link("realdir", dir.join("link-to-dir")).unwrap();
+    link("/nonexistent/target", dir.join("broken-link")).unwrap();
+    link("realfile", dir.join("weird@name")).unwrap();
+
+    dir
+}
+
 fn path_arg(dir: &Path) -> String {
     dir.to_str().unwrap().to_string()
 }
@@ -419,6 +436,55 @@ fn sort_flags_are_mutually_exclusive() {
 
     assert!(!out.success, "two sort flags were accepted");
     assert!(out.stdout.is_empty(), "printed a listing anyway");
+}
+
+/// Symlinks are marked for a person and left alone for a parser.
+#[test]
+fn symlinks_are_marked_in_the_human_format_only() {
+    let dir = link_tree("links");
+    let path = path_arg(&dir);
+
+    let human = run(&["-f", &path]);
+    assert!(human.success, "{}", human.stderr);
+    for name in [
+        "link-to-file@",
+        "link-to-dir@",
+        "broken-link@",
+        "weird@name@",
+    ] {
+        assert!(
+            human.stdout.contains(name),
+            "{} missing:\n{}",
+            name,
+            human.stdout
+        );
+    }
+    // Regular entries keep their names, and directories their slash. The name ends
+    // the line, so an unmarked one is followed by the newline.
+    assert!(human.stdout.contains("realfile\n"), "{}", human.stdout);
+    assert!(human.stdout.contains("realdir/"), "{}", human.stdout);
+    assert!(!human.stdout.contains("realfile@"), "{}", human.stdout);
+
+    let parseable = run(&["-p", &path]);
+    let names: Vec<&str> = parseable
+        .stdout
+        .lines()
+        .map(|l| l.rsplit('\t').next().unwrap())
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        [
+            "broken-link",
+            "link-to-dir",
+            "link-to-file",
+            "realdir/",
+            "realfile",
+            "weird@name",
+        ],
+        "the parseable stream marked a name"
+    );
 }
 
 #[test]
