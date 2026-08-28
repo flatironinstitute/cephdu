@@ -10,7 +10,10 @@ use std::{fs, os::unix::fs::MetadataExt};
 use ratatui::widgets::ListState;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::fs::{FSType, get_entries, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name};
+use crate::fs::{
+    FSType, get_entries, get_fs, get_rbytes, get_rctime, get_rentries, get_rfiles, get_rsubdirs,
+    id_to_name,
+};
 use crate::navigation;
 use crate::popup::Popup;
 
@@ -77,6 +80,10 @@ pub struct App {
     /// only the renderer knows how wide the rows came out.
     pub hscroll: usize,
     pub message: Option<Message>,
+    /// The numbers behind the info panel; `Some` is what "shown" means. Cached
+    /// raw rather than formatted so `e` reformats them, and so the panel costs
+    /// its four xattr reads once at the toggle or on arrival, never per frame.
+    pub info: Option<InfoStats>,
     highlighted: HashMap<PathBuf, (String, usize)>,
     /// Cloned into each listing worker; results come back through the paired
     /// receiver, which the event loop owns.
@@ -455,6 +462,20 @@ pub enum MessageKind {
     Info,
 }
 
+/// What the info panel shows, as numbers. This-level values are counted from the
+/// listing's entries; the recursive ones are the cwd's r-attrs, absent off Ceph.
+/// `rentries` and `rsubdirs` already have the directory's self-count removed.
+#[derive(Debug, Clone, Copy)]
+pub struct InfoStats {
+    pub level_bytes: usize,
+    pub level_files: usize,
+    pub level_dirs: usize,
+    pub rbytes: Option<usize>,
+    pub rentries: Option<usize>,
+    pub rfiles: Option<usize>,
+    pub rsubdirs: Option<usize>,
+}
+
 impl App {
     /// An app with nothing listed yet. Reads are dispatched with `start_listing`
     /// and land through the returned receiver, so nothing here touches the
@@ -472,6 +493,7 @@ impl App {
             exact: false,
             hscroll: 0,
             message: None,
+            info: None,
             highlighted: HashMap::new(),
             tx,
             pending: None,
@@ -609,6 +631,10 @@ impl App {
                 }
                 // Restore the highlighted entry if we have one
                 self.restore_selected();
+                // The panel describes whatever is on screen, so it follows.
+                if self.info.is_some() {
+                    self.info = Some(self.compute_info());
+                }
                 // A column toggled or a sort begun while the read ran may need
                 // more than it fetched.
                 self.fetch_if_needed();
@@ -763,6 +789,52 @@ impl App {
             Some(env!("CARGO_PKG_REPOSITORY")),
             Some(&help_text),
         );
+    }
+
+    pub fn toggle_info(&mut self) {
+        self.info = match self.info {
+            Some(_) => None,
+            None => Some(self.compute_info()),
+        };
+    }
+
+    /// The numbers for the info panel (issues #9, #16, #17): what the listing
+    /// cannot show without muddying it, chiefly how much of the usage sits at
+    /// this level in loose files against everything below.
+    ///
+    /// This level comes from the listing in hand -- file sizes and kinds were read
+    /// with it -- so it works on any filesystem. The recursive values are a fresh
+    /// snapshot of the cwd's four r-attrs, read now rather than taken from the
+    /// listing so that they are consistent *with each other*; they may disagree
+    /// transiently with the border's totals (or this level's sums) while the MDS
+    /// propagates, and each is still individually true. Off Ceph they are `None`
+    /// and their lines are simply omitted.
+    fn compute_info(&self) -> InfoStats {
+        let level_bytes: usize = self
+            .dir_listing
+            .entries
+            .iter()
+            .filter(|e| e.kind != EntryKind::Dir)
+            .filter_map(|e| e.size)
+            .sum();
+        let level_files = self
+            .dir_listing
+            .entries
+            .iter()
+            .filter(|e| e.kind != EntryKind::Dir)
+            .count();
+        let level_dirs = self.dir_listing.entries.len() - level_files;
+
+        InfoStats {
+            level_bytes,
+            level_files,
+            level_dirs,
+            rbytes: get_rbytes(&self.cwd),
+            rentries: get_rentries(&self.cwd).map(|n| n.saturating_sub(1)),
+            rfiles: get_rfiles(&self.cwd),
+            // Of the four, only rsubdirs counts the directory itself.
+            rsubdirs: get_rsubdirs(&self.cwd).map(|n| n.saturating_sub(1)),
+        }
     }
 
     pub fn sort_or_reverse(&mut self, sort_mode: SortMode) {
@@ -1938,6 +2010,61 @@ mod tests {
         let mut ascending = names.clone();
         ascending.sort();
         assert_eq!(names, ascending, "listing is not in name order");
+    }
+
+    /// The -i flag's path: the panel opens before anything is listed, and the
+    /// first listing's arrival fills it in.
+    #[test]
+    fn a_panel_opened_at_startup_follows_the_first_listing() {
+        let (mut app, mut listings) = App::new(Options::default());
+        app.toggle_info();
+        assert_eq!(app.info.unwrap().level_files, 0, "nothing is listed yet");
+
+        app.start_listing(PathBuf::from("."), OnError::Message, false);
+        app.pump(&mut listings);
+
+        let stats = app.info.expect("the first listing closed the panel");
+        assert!(stats.level_files > 0, "the arrival did not fill the panel");
+    }
+
+    /// The info panel's this-level numbers come from the listing in hand, its
+    /// recursive ones only from a filesystem that provides them -- and it follows
+    /// a directory change, since it describes whatever is on screen.
+    #[test]
+    fn info_describes_the_current_level() {
+        use crossterm::event::{KeyCode, KeyEvent};
+
+        let (mut app, mut listings) = app_at(".", Options::default());
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+
+        let stats = app.info.expect("i did not open the panel");
+        // The repo has files and directories at its top level.
+        assert!(stats.level_bytes > 0);
+        assert!(stats.level_files > 0);
+        assert!(stats.level_dirs > 0);
+        if app.dir_listing.is_ceph() {
+            assert!(stats.rbytes.is_some());
+            assert!(stats.rfiles.is_some());
+        } else {
+            assert!(stats.rbytes.is_none());
+        }
+
+        // Whatever directory is on screen is the one described.
+        app.cd(&PathBuf::from("src"));
+        app.pump(&mut listings);
+        let stats = app.info.expect("the cd closed the panel");
+        let files_on_screen = app
+            .dir_listing
+            .iter_entries_sorted()
+            .filter(|e| e.kind != EntryKind::Dir)
+            .count();
+        assert_eq!(
+            stats.level_files, files_on_screen,
+            "the panel does not match the listing"
+        );
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+        assert!(app.info.is_none(), "i did not close the panel");
     }
 
     /// Cancelling keeps the directory on screen, and the worker's answer -- it may

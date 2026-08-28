@@ -573,6 +573,20 @@ fn tui_conflicts_with_flat_flags() {
     }
 }
 
+/// The info panel belongs to the interactive interface; the flat formats have
+/// no place for it and must not grow one, so the flag refuses to combine.
+#[test]
+fn info_conflicts_with_flat_flags() {
+    let dir = tree("info_conflict");
+    for flag in ["--flat", "--parseable", "--long"] {
+        let out = run(&["--info", flag, &path_arg(&dir)]);
+        assert!(!out.success, "--info {} was accepted", flag);
+    }
+
+    let out = run(&["-i", "-f", &path_arg(&dir)]);
+    assert!(!out.success, "-if was accepted");
+}
+
 /// Concurrent reads are a speed choice, never an output one: whatever the jobs
 /// count, byte-identical listings, in both formats and with the extras read.
 #[test]

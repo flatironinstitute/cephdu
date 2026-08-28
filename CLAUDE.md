@@ -273,6 +273,17 @@ Other things worth knowing before editing:
   Creating something *inside* a directory sets the parent's rctime, since that changes the parent's own ctime,
   so it is only the leaves of a fresh tree that read zero. There is no third option to fall back on either:
   CephFS exposes no birth time (`ls --time=birth` reports `?`).
+- The info panel (`i`, or `-i`/`--info` to start with it shown — the flag conflicts with the flat modes, whose
+  format must not grow columns; issues #9/#16/#17) is where non-recursive numbers live, in words, so the listing's
+  every-number-is-recursive rule stays intact. Its this-level values come from the listing in hand (works off
+  Ceph); its recursive lines are a fresh four-xattr snapshot of the cwd — consistent with each other, though
+  transiently not necessarily with the border or the this-level sums, and that trade (internal consistency over
+  agreement) is deliberate. A panel renders every frame, so `App::info` caches the snapshot as *numbers*, taken
+  only at the toggle and again when a listing lands (`compute_info`) — never in the render path — and formatting
+  happens per frame so `e` reformats it. Its height varies with which lines the filesystem could fill, and the
+  listing's bottom border doubles as its top, which is why `render_list` switches that border's corners to
+  connectors while the panel is up. `rsubdirs` is the only r-attr that counts the directory itself;
+  files-per-dir divides by it *un*subtracted so a flat directory doesn't divide by zero.
 - Times shown are `rctime` for directories and `ctime` for files — deliberately ctime, not mtime; see the
   `after_help` text in [main.rs](src/main.rs).
 

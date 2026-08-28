@@ -9,12 +9,16 @@ const ATTR_BUF_SIZE: usize = 64;
 const DIR_RBYTES_ATTR: &str = "ceph.dir.rbytes";
 const DIR_RCTIME_ATTR: &str = "ceph.dir.rctime";
 const DIR_RENTRIES_ATTR: &str = "ceph.dir.rentries";
+const DIR_RFILES_ATTR: &str = "ceph.dir.rfiles";
+const DIR_RSUBDIRS_ATTR: &str = "ceph.dir.rsubdirs";
 const DIR_ENTRIES_ATTR: &str = "ceph.dir.entries";
 
 lazy_static! {
     static ref DIR_RBYTES_ATTR_C: CString = CString::new(DIR_RBYTES_ATTR).unwrap();
     static ref DIR_RCTIME_ATTR_C: CString = CString::new(DIR_RCTIME_ATTR).unwrap();
     static ref DIR_RENTRIES_ATTR_C: CString = CString::new(DIR_RENTRIES_ATTR).unwrap();
+    static ref DIR_RFILES_ATTR_C: CString = CString::new(DIR_RFILES_ATTR).unwrap();
+    static ref DIR_RSUBDIRS_ATTR_C: CString = CString::new(DIR_RSUBDIRS_ATTR).unwrap();
     static ref DIR_ENTRIES_ATTR_C: CString = CString::new(DIR_ENTRIES_ATTR).unwrap();
 }
 
@@ -147,6 +151,19 @@ pub fn get_rbytes(path: &Path) -> Option<usize> {
     // convert rbytes xattr from string to unsigned
     let rbytes = rbytes.trim().parse::<usize>().ok()?;
     Some(rbytes)
+}
+
+/// The recursive file count. Unlike `rentries` there is no self to subtract:
+/// only `rsubdirs` counts the directory itself.
+pub fn get_rfiles(path: &Path) -> Option<usize> {
+    let rfiles = get_xattr(path, &DIR_RFILES_ATTR_C)?;
+    rfiles.trim().parse::<usize>().ok()
+}
+
+/// The recursive directory count, including the directory itself.
+pub fn get_rsubdirs(path: &Path) -> Option<usize> {
+    let rsubdirs = get_xattr(path, &DIR_RSUBDIRS_ATTR_C)?;
+    rsubdirs.trim().parse::<usize>().ok()
 }
 
 pub fn get_rctime(path: &Path) -> Option<usize> {
