@@ -153,6 +153,15 @@ The listing scrolls sideways with the left and right arrow keys when the rows ar
 wider than the terminal, which happens once the owner or time columns are shown.
 The whole listing moves, gauges included; the border and its labels stay put.
 
+### Slow directories
+Reading a directory costs a round trip to the metadata server per entry, so a
+huge one can take minutes. The interface doesn't block on it: the directory
+already on screen stays usable while the read runs, a notice counts the entries
+read so far, and `Esc` or `Ctrl-C` stops the read and stays put. Navigating
+somewhere else simply abandons the read in favor of the new one, quitting never
+waits, and the interface appears immediately at startup even when the first
+directory is slow. A read that finishes promptly shows none of this.
+
 ## Flat text mode
 `cephdu --flat` prints the listing as text instead of drawing the interactive
 interface, with the same units the interface uses:

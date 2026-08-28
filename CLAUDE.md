@@ -36,9 +36,10 @@ Layering, roughly bottom-up:
 - [fs.rs](src/fs.rs) — the only `unsafe`/libc code: `lgetxattr` for the three r-attrs, `statfs` for
   filesystem-type detection, `getpwuid_r` for uid→name (memoized in a global `NAME_CACHE`). Returns `Option`
   everywhere; a missing xattr is normal, not an error.
-- [app.rs](src/app.rs) — all state. `App` holds the cwd and one `DirListing`; `DirListing` holds `Vec<DirEntry>`
-  plus a ratatui `ListState`, sort mode, and aggregate `ListingStats`. `DirEntry::from` is where one stat +
-  three xattr calls happen per entry.
+- [app.rs](src/app.rs) — all state. `App` holds the cwd, one `DirListing`, and the machinery for the listing in
+  flight (`pending`, a generation counter, the worker channel's sender); `DirListing` holds `Vec<DirEntry>`
+  plus a ratatui `ListState`, sort mode, and aggregate `ListingStats`. `DirEntry::from` is where the per-entry
+  stat and xattr calls happen.
 - [format.rs](src/format.rs) — the base-1000 size/count units and the `ls -l`-style time format, shared by both
   output modes. Pure functions, so this is where formatting tests live.
 - [navigation.rs](src/navigation.rs) — `App::handle_key`, plus the `HELP` table that is both the key mapping's
@@ -48,10 +49,34 @@ Layering, roughly bottom-up:
 - [flat.rs](src/flat.rs) — the non-interactive renderer, which takes a `DirListing` and a `Write`.
 - [popup.rs](src/popup.rs) — scrollable modal used only for help so far.
 
-Control flow for the TUI is a blocking loop in `run_app`: draw, block on `event::read()`, dispatch to
-`handle_key`. There is no tick, no async runtime, and no redraw except after a key press. `cd` re-reads the whole
-directory synchronously, so a large directory blocks; `ls()` works around this by polling for Ctrl-C
-mid-iteration, which [app.rs](src/app.rs) itself flags as the wrong fix.
+Control flow for the TUI is a `tokio::select!` loop in `run_app` (issue #18): draw, then wait on whichever comes
+first of a key event (crossterm's `EventStream`), a listing worker's answer, or — only while a read is in
+flight — a 100ms tick that keeps the progress notice current. There is no free-running tick. The runtime is
+current-thread and multiplexes wake-ups only: every filesystem call is a blocking syscall, so listings run on
+plain `std::thread`s that `App::start_listing` spawns, not on runtime tasks — which is also why quitting never
+waits on a worker stuck in a syscall (nothing joins it; process exit reaps it) and why `App` works without a
+runtime, unit tests included. The moving parts and their traps:
+
+- Cancellation is cooperative and stays so under any runtime: a thread mid-`lgetxattr` cannot be aborted, so
+  `ls()` checks an atomic flag between entries (a load, not a syscall — [tests/syscalls.rs](tests/syscalls.rs)
+  still holds) and returns `ErrorKind::Interrupted`. The flag lives in `ListingWatch`, shared worker/interface,
+  which also carries the entries-so-far counter the progress notice reads.
+- A worker's answer is applied only if its generation matches the one `pending` — superseding (a `cd` during a
+  `cd`) and cancelling both orphan the old answer, which may still arrive and must be dropped, not applied.
+  Anything that changes what a listing shows goes through `start_listing`/`on_listing_msg`; there is no
+  synchronous cd left.
+- Cancel semantics: Esc and Ctrl-C stop the read and keep the directory on screen (the old listing was never
+  replaced); while idle they do nothing. Only `q` quits, deliberately: a cancel key that doubled as quit would
+  make an extra press — or one landing just after the read finishes — exit unintended, which is why Esc lost its
+  quit binding when it gained cancel. The Ctrl-C key arm must stay *above* the `'c'` sort arm with a `CONTROL`
+  guard, or Ctrl-C sorts by count again.
+- Startup goes through the same path: `App::new` reads nothing, `run_app` dispatches the first listing, and the
+  old fall-back-to-`.` logic is the `OnError::Fallback` arm. `Pending::preserve_message` exists because that
+  fallback sets a warning that the fallback listing's arrival must not clear.
+- In unit tests, every call that can dispatch a read (`cd`, the toggles, the sorts) needs `App::pump` after it,
+  which drains the channel the way the event loop would — otherwise the answer sits unapplied and the test
+  asserts against the stale listing. The ui.rs tests do the opposite: they drop the receiver and must never
+  dispatch, which holds because their synthetic listing already has owners and times.
 
 ### Output modes
 
@@ -240,9 +265,8 @@ dependency, deliberately — cargo already provides both paths.
   one `statx` per file, two `lgetxattr` per directory and no stat for a directory at all, and nothing else
   scales — that last part is the
   assertion worth keeping, since an accidental per-entry syscall is what makes a large directory slow. Skips
-  without strace or ptrace permission. It cannot see the Ctrl-C poll in `ls()`, which only costs a syscall when
-  crossterm's event source initialises, and that needs a controlling terminal: under a test runner /dev/tty
-  fails with ENXIO, so the interface may pay one more syscall per entry than the harness reports.
+  without strace or ptrace permission. The numbers hold for the interface too: the cancellation check between
+  entries is an atomic load, not a syscall.
 - [tests/ceph.rs](tests/ceph.rs) — the only coverage of the xattrs themselves, and the only tests that can't run
   in CI. They skip (not fail) with a `SKIP` notice when no CephFS is available, so `cargo test` is green
   everywhere. The MDS updates recursive stats asynchronously, so assertions poll until the tree settles;
