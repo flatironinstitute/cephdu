@@ -1,12 +1,13 @@
-use app::Message;
 use chrono::{Datelike, Local};
 use clap::Parser;
 use color_eyre::Result;
-use crossterm::event::{self, Event};
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio_stream::StreamExt;
 
 mod app;
 mod flat;
@@ -17,7 +18,7 @@ mod popup;
 mod ui;
 
 use crate::{
-    app::{App, Options, SortField, SortMode},
+    app::{App, OnError, Options, SortField, SortMode},
     flat::Format,
     ui::ui,
 };
@@ -178,32 +179,27 @@ fn main() -> Result<()> {
         return run_flat(&path, &format, options);
     }
 
-    let mut app = App::new(Some(&path), options).unwrap_or_else(|e| {
-        let mut app = App::new(Some(&PathBuf::from(".")), options).unwrap_or_else(|_| {
-            eprintln!("Error opening {:?}: {}", path, e);
-            std::process::exit(1);
-        });
-
-        if path_was_explicit {
-            app.message(Some(Message {
-                text: format!("Error opening {:?}: {}", path, e),
-                kind: app::MessageKind::Warning,
-            }));
-        }
-        app
-    });
-
-    app.exact = args.exact;
-
     color_eyre::install()?;
+    // The runtime multiplexes wake-ups -- key presses, listing results, the
+    // progress tick -- while the filesystem work itself runs on plain threads that
+    // App manages, so a single-threaded runtime is all the loop needs.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()?;
     let mut terminal = ratatui::init();
 
-    run_app(&mut terminal, &mut app)?;
+    let res = runtime.block_on(run_app(
+        &mut terminal,
+        &path,
+        path_was_explicit,
+        options,
+        args.exact,
+    ));
 
     // cleanup terminal
     ratatui::restore();
 
-    Ok(())
+    res
 }
 
 /// Print a flat listing of `path`. Unlike the interactive interface, this doesn't
@@ -236,15 +232,54 @@ fn run_flat(path: &Path, format: &Format, options: Options) -> Result<()> {
     }
 }
 
-fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
-    while !app.should_exit {
-        terminal.draw(|f| ui(f, app))?;
+/// While a read is in flight, wake up this often anyway so the progress notice
+/// stays current; there is no free-running tick otherwise.
+const PROGRESS_TICK: Duration = Duration::from_millis(100);
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind == event::KeyEventKind::Release {
-                continue;
-            }
-            app.handle_key(key);
+async fn run_app<B: Backend>(
+    terminal: &mut Terminal<B>,
+    path: &Path,
+    path_was_explicit: bool,
+    options: Options,
+    exact: bool,
+) -> Result<()> {
+    let (mut app, mut listings) = App::new(options);
+    app.exact = exact;
+    // Purely for the frame drawn before the first listing lands, which replaces it
+    // with the canonical path.
+    app.cwd = path.to_path_buf();
+
+    // The fallback App::new used to apply, now expressed as what to do when the
+    // first listing fails: warn only when the user named the path themselves, and
+    // don't fall back to where we already are.
+    let on_error = if path == Path::new(".") {
+        OnError::Message
+    } else {
+        OnError::Fallback {
+            path: PathBuf::from("."),
+            warn: path_was_explicit,
+        }
+    };
+    app.start_listing(path.to_path_buf(), on_error, false);
+
+    let mut events = EventStream::new();
+    while !app.should_exit {
+        terminal.draw(|f| ui(f, &mut app))?;
+
+        tokio::select! {
+            event = events.next() => match event {
+                Some(Ok(Event::Key(key))) => {
+                    if key.kind != KeyEventKind::Release {
+                        app.handle_key(key);
+                    }
+                }
+                // Resize and the like: fall through to redraw.
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e.into()),
+                None => break,
+            },
+            Some(msg) = listings.recv() => app.on_listing_msg(msg),
+            _ = tokio::time::sleep(PROGRESS_TICK), if app.is_reading() => {}
         }
     }
     Ok(())

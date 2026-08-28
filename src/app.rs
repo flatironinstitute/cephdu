@@ -2,12 +2,13 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
+use std::time::{Duration, Instant};
 use std::{fs, os::unix::fs::MetadataExt};
 
-use crossterm::event::{self, Event, KeyCode, KeyModifiers, poll};
-
 use ratatui::widgets::ListState;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::fs::{FSType, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name};
 use crate::navigation;
@@ -59,7 +60,8 @@ pub struct App {
     pub should_exit: bool,
     pub cwd: PathBuf,
     pub dir_listing: DirListing,
-    pub original_cwd: PathBuf,
+    /// Where the app started, once the first listing has resolved it.
+    pub original_cwd: Option<PathBuf>,
     pub popup: Option<Popup>,
     pub show_owner: bool,
     pub show_ctime: bool,
@@ -70,7 +72,81 @@ pub struct App {
     pub hscroll: usize,
     pub message: Option<Message>,
     highlighted: HashMap<PathBuf, (String, usize)>,
+    /// Cloned into each listing worker; results come back through the paired
+    /// receiver, which the event loop owns.
+    tx: UnboundedSender<ListingMsg>,
+    pending: Option<Pending>,
+    /// Numbers the listing requests so that an answer to a superseded one -- the
+    /// worker keeps running until it next checks its watch -- is recognized on
+    /// arrival and dropped.
+    generation: u64,
 }
+
+/// Shared between a listing worker and the interface. Plain atomics rather than
+/// anything async, so the worker stays ordinary blocking code: it checks `cancel`
+/// between entries and counts into `seen`, and either side can be polled cheaply.
+pub struct ListingWatch {
+    cancel: AtomicBool,
+    seen: AtomicUsize,
+}
+
+impl ListingWatch {
+    fn new() -> ListingWatch {
+        ListingWatch {
+            cancel: AtomicBool::new(false),
+            seen: AtomicUsize::new(0),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancel.store(true, AtomicOrdering::Relaxed);
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancel.load(AtomicOrdering::Relaxed)
+    }
+
+    fn saw_one(&self) {
+        self.seen.fetch_add(1, AtomicOrdering::Relaxed);
+    }
+
+    fn seen(&self) -> usize {
+        self.seen.load(AtomicOrdering::Relaxed)
+    }
+}
+
+/// A listing worker's answer. `generation` says which request it answers.
+pub struct ListingMsg {
+    generation: u64,
+    result: Result<(PathBuf, DirListing), std::io::Error>,
+}
+
+/// A listing not yet arrived: the request's identity, its watch, and what to do if
+/// it fails.
+struct Pending {
+    generation: u64,
+    /// As requested, for the progress notice; the canonical path arrives with the
+    /// listing.
+    path: PathBuf,
+    watch: Arc<ListingWatch>,
+    started: Instant,
+    on_error: OnError,
+    /// Leave whatever message is already on screen alone when this listing lands.
+    /// The fallback dispatch sets a warning that landing must not clear.
+    preserve_message: bool,
+}
+
+/// What to do when a listing fails to read.
+pub enum OnError {
+    /// Show the error and stay where we are.
+    Message,
+    /// Try this path instead -- the startup fallback -- warning first if asked to.
+    Fallback { path: PathBuf, warn: bool },
+}
+
+/// How long a read may run before the interface mentions it. Long enough that an
+/// ordinary directory change never flashes the notice.
+const PROGRESS_AFTER: Duration = Duration::from_millis(150);
 
 /// An encapsulation of a list of all files/dirs in a directory.
 pub struct DirListing {
@@ -252,20 +328,16 @@ pub enum MessageKind {
 }
 
 impl App {
-    pub fn new(cwd: Option<&PathBuf>, options: Options) -> Result<App, std::io::Error> {
-        let cwd: PathBuf = if let Some(cwd) = cwd {
-            cwd.clone()
-        } else {
-            std::env::current_dir()?
-        };
-
-        let dir_listing = DirListing::empty(options);
-        let original_cwd = cwd.clone();
-        let mut app = App {
+    /// An app with nothing listed yet. Reads are dispatched with `start_listing`
+    /// and land through the returned receiver, so nothing here touches the
+    /// filesystem and the interface can draw before the first listing arrives.
+    pub fn new(options: Options) -> (App, UnboundedReceiver<ListingMsg>) {
+        let (tx, rx) = unbounded_channel();
+        let app = App {
             should_exit: false,
             cwd: PathBuf::new(),
-            dir_listing,
-            original_cwd,
+            dir_listing: DirListing::empty(options),
+            original_cwd: None,
             popup: None,
             show_owner: false,
             show_ctime: false,
@@ -273,52 +345,154 @@ impl App {
             hscroll: 0,
             message: None,
             highlighted: HashMap::new(),
+            tx,
+            pending: None,
+            generation: 0,
         };
-        app.try_cd(&cwd)?;
-
-        // Save the original (resolved) dir
-        app.original_cwd = app.cwd.clone();
-
-        Ok(app)
+        (app, rx)
     }
 
     pub fn cd(&mut self, path: &PathBuf) {
-        let res = self.try_cd(path);
-        if let Err(e) = res {
+        let target = if path.is_absolute() {
+            path.clone()
+        } else {
+            self.cwd.join(path)
+        };
+        self.start_listing(target, OnError::Message, false);
+    }
+
+    /// Read `path` on a worker thread; the result arrives as a `ListingMsg`. Any
+    /// read already in flight is superseded: told to stop, and its answer dropped
+    /// if it lands anyway. The worker is a plain thread rather than a runtime task
+    /// so that one blocked in a syscall can never stall anything else -- quitting
+    /// included -- and so this needs no runtime to be running.
+    pub fn start_listing(&mut self, path: PathBuf, on_error: OnError, preserve_message: bool) {
+        if let Some(old) = self.pending.take() {
+            old.watch.cancel();
+        }
+        self.generation += 1;
+        let generation = self.generation;
+        let watch = Arc::new(ListingWatch::new());
+        // What the read fetches follows the columns and sort, not what the current
+        // listing happened to be read with: leaving a directory with the owner
+        // hidden should not make the next one pay for it.
+        let options = self.needs();
+
+        let tx = self.tx.clone();
+        let worker = {
+            let path = path.clone();
+            let watch = watch.clone();
+            move || {
+                let result = path.canonicalize().and_then(|canon| {
+                    DirListing::from_watched(&canon, options, &watch).map(|l| (canon, l))
+                });
+                // The receiver is gone only when the app is; nowhere to report to.
+                let _ = tx.send(ListingMsg { generation, result });
+            }
+        };
+        std::thread::spawn(worker);
+
+        self.pending = Some(Pending {
+            generation,
+            path,
+            watch,
+            started: Instant::now(),
+            on_error,
+            preserve_message,
+        });
+    }
+
+    /// Apply a worker's answer, unless it answers a request that is no longer the
+    /// live one -- superseded or cancelled -- in which case it is dropped.
+    pub fn on_listing_msg(&mut self, msg: ListingMsg) {
+        if self.pending.as_ref().map(|p| p.generation) != Some(msg.generation) {
+            return;
+        }
+        let pending = self.pending.take().unwrap();
+
+        match msg.result {
+            Ok((path, listing)) => {
+                // Record which entry was highlighted in case we navigate back.
+                // Saved now, not at dispatch, so moving the cursor while the read
+                // ran isn't undone.
+                self.save_selected();
+                self.dir_listing = listing;
+                self.cwd = path;
+                if self.original_cwd.is_none() {
+                    self.original_cwd = Some(self.cwd.clone());
+                }
+                if !pending.preserve_message {
+                    if !self.dir_listing.is_ceph() {
+                        self.message(Some(Message {
+                            text: "Warning: not a Ceph directory".to_string(),
+                            kind: MessageKind::Warning,
+                        }));
+                    } else {
+                        self.message(None);
+                    }
+                }
+                // Restore the highlighted entry if we have one
+                self.restore_selected();
+                // A column toggled or a sort begun while the read ran may need
+                // more than it fetched.
+                self.fetch_if_needed();
+            }
+            Err(e) => match pending.on_error {
+                OnError::Message => self.message(Some(Message {
+                    text: format!("Error changing directory: {}", e),
+                    kind: MessageKind::Error,
+                })),
+                OnError::Fallback { path, warn } => {
+                    if warn {
+                        self.message(Some(Message {
+                            text: format!("Error opening {:?}: {}", pending.path, e),
+                            kind: MessageKind::Warning,
+                        }));
+                    }
+                    self.start_listing(path, OnError::Message, warn);
+                }
+            },
+        }
+    }
+
+    /// Stop the read in flight, staying in the directory on screen. The worker
+    /// exits when it next checks; its answer is already orphaned here.
+    pub fn cancel_listing(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            pending.watch.cancel();
             self.message(Some(Message {
-                text: format!("Error changing directory: {}", e),
-                kind: MessageKind::Error,
+                text: format!("Cancelled reading {:?}", pending.path),
+                kind: MessageKind::Warning,
             }));
         }
     }
 
-    fn try_cd(&mut self, path: &PathBuf) -> Result<(), std::io::Error> {
-        // Record which entry was highlighted in case we navigate back
-        self.save_selected();
+    pub fn is_reading(&self) -> bool {
+        self.pending.is_some()
+    }
 
-        let new = if path.is_absolute() {
-            path.canonicalize()?
-        } else {
-            self.cwd.join(path).canonicalize()?
-        };
-        // What the next read fetches follows the column, not what this listing
-        // happened to be read with: leaving a directory with the owner hidden should
-        // not make the next one pay for it.
-        let options = self.needs();
-        self.dir_listing = DirListing::from(&new, options)?;
-        self.cwd = new;
-        if !self.dir_listing.is_ceph() {
-            self.message(Some(Message {
-                text: "Warning: not a Ceph directory".to_string(),
-                kind: MessageKind::Warning,
-            }));
-        } else {
-            self.message(None);
+    /// Block until nothing is in flight, applying each answer as it lands: what the
+    /// event loop does, for tests -- which therefore exercise the real dispatch.
+    #[cfg(test)]
+    pub fn pump(&mut self, listings: &mut UnboundedReceiver<ListingMsg>) {
+        while self.pending.is_some() {
+            let msg = listings.blocking_recv().expect("listing worker hung up");
+            self.on_listing_msg(msg);
         }
+    }
 
-        // Restore the highlighted entry if we have one
-        self.restore_selected();
-        Ok(())
+    /// The notice for a read still running, once it has been slow enough to
+    /// mention -- an ordinary directory change comes and goes without one.
+    pub fn progress(&self) -> Option<Message> {
+        let pending = self.pending.as_ref()?;
+        (pending.started.elapsed() >= PROGRESS_AFTER).then(|| Message {
+            text: format!(
+                "Reading {:?} ... {} entries (Ctrl-C to cancel)",
+                pending.path,
+                pending.watch.seen()
+            ),
+            kind: MessageKind::Info,
+        })
     }
 
     /// What a read of this directory would have to fetch: a column needs its value,
@@ -428,10 +602,21 @@ impl App {
 
 impl DirListing {
     pub fn from(path: &Path, options: Options) -> Result<DirListing, std::io::Error> {
+        // A watch nothing holds: never cancelled, progress unread.
+        DirListing::from_watched(path, options, &ListingWatch::new())
+    }
+
+    /// `from`, reporting to a watch: the read stops (with `ErrorKind::Interrupted`)
+    /// when the watch is cancelled, and counts entries into it as they land.
+    fn from_watched(
+        path: &Path,
+        options: Options,
+        watch: &ListingWatch,
+    ) -> Result<DirListing, std::io::Error> {
         let path: PathBuf = path.canonicalize()?;
         let fs = get_fs(&path);
 
-        let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path, &options)?;
+        let (entry_cwd, mut entries): (DirEntry, Vec<DirEntry>) = ls(&path, &options, watch)?;
 
         // Don't trust dir sizes on non-ceph!
         if !fs.map(FSType::is_ceph).unwrap_or(false) {
@@ -739,7 +924,11 @@ fn sort(entries: &mut [DirEntry], sort_mode: SortMode, dirs_first: bool) {
     });
 }
 
-fn ls(path: &PathBuf, options: &Options) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
+fn ls(
+    path: &PathBuf,
+    options: &Options,
+    watch: &ListingWatch,
+) -> Result<(DirEntry, Vec<DirEntry>), std::io::Error> {
     // The cwd is only here for its totals, so it needs neither a stat nor a time.
     let totals = Options {
         owners: false,
@@ -751,20 +940,12 @@ fn ls(path: &PathBuf, options: &Options) -> Result<(DirEntry, Vec<DirEntry>), st
     let mut entries: Vec<DirEntry> = Vec::new();
 
     for entry_result in dir_iterator {
-        if poll(Duration::from_secs(0)).unwrap_or(false) {
-            // If the user presses Ctrl-C during this loop, interrupt.
-            // TODO: this is the wrong way to do this! The whole app should use an
-            // async runtime that can handle key presses and interrupts.
-
-            if let Ok(Event::Key(key)) = event::read()
-                && key.code == KeyCode::Char('c')
-                && key.modifiers.contains(KeyModifiers::CONTROL)
-            {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::Interrupted,
-                    "Interrupted by user",
-                ));
-            }
+        // An atomic load, so unlike a syscall it costs a large directory nothing.
+        if watch.cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "cancelled",
+            ));
         }
 
         let entry = entry_result?;
@@ -790,6 +971,7 @@ fn ls(path: &PathBuf, options: &Options) -> Result<(DirEntry, Vec<DirEntry>), st
         };
 
         entries.push(DirEntry::from(path, kind, stat, options));
+        watch.saw_one();
     }
 
     Ok((entry_cwd, entries))
@@ -798,6 +980,16 @@ fn ls(path: &PathBuf, options: &Options) -> Result<(DirEntry, Vec<DirEntry>), st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An app listing `path`, read to completion the way the event loop would.
+    /// Keep the receiver: every later call that can dispatch a read -- cd, the
+    /// toggles, the sorts -- needs a `pump` after it.
+    fn app_at(path: &str, options: Options) -> (App, UnboundedReceiver<ListingMsg>) {
+        let (mut app, mut listings) = App::new(options);
+        app.start_listing(PathBuf::from(path), OnError::Message, false);
+        app.pump(&mut listings);
+        (app, listings)
+    }
 
     fn entry(name: &str, size: usize) -> DirEntry {
         DirEntry {
@@ -1003,7 +1195,7 @@ mod tests {
     /// highlighted there. Uses the crate's own tree, which cargo makes the cwd.
     #[test]
     fn cd_selects_the_first_real_entry_then_remembers() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
         assert_eq!(app.dir_listing.selected(), Some(1));
         assert_ne!(app.dir_listing.get(1).name, "..");
 
@@ -1011,9 +1203,11 @@ mod tests {
             .select_by_name("src/")
             .expect("src/ should be listed");
         app.cd(&PathBuf::from("src"));
+        app.pump(&mut listings);
         assert_eq!(app.dir_listing.selected(), Some(1), "did not skip '..'");
 
         app.cd(&PathBuf::from(".."));
+        app.pump(&mut listings);
         let selected = app.dir_listing.selected().unwrap();
         assert_eq!(app.dir_listing.get(selected).name, "src/");
     }
@@ -1046,7 +1240,7 @@ mod tests {
     /// for -- which is also what lets a directory be listed without a stat at all.
     #[test]
     fn the_owner_is_read_only_when_asked_for() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
         assert!(!app.dir_listing.options().owners);
         assert!(
             app.dir_listing
@@ -1056,6 +1250,7 @@ mod tests {
         );
 
         app.toggle_owner();
+        app.pump(&mut listings);
         assert!(app.show_owner);
         assert!(app.dir_listing.options().owners);
         assert!(
@@ -1088,7 +1283,7 @@ mod tests {
     /// somewhere else: the xattrs, and readdir for the kind.
     #[test]
     fn a_directory_needs_no_stat() {
-        let app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (app, _listings) = app_at(".", Options::default());
 
         let dirs: Vec<&DirEntry> = app
             .dir_listing
@@ -1111,8 +1306,9 @@ mod tests {
     /// not pay for it twice, however many times it is toggled.
     #[test]
     fn showing_the_owner_again_does_not_re_read_it() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
         app.toggle_owner();
+        app.pump(&mut listings);
         assert!(
             app.dir_listing.options().owners,
             "the first show did not read"
@@ -1121,9 +1317,13 @@ mod tests {
         // A value only a re-read would overwrite.
         app.dir_listing.entries[0].user = Some("sentinel".to_string());
 
+        // Pumped each time, so a wrongly dispatched re-read would actually land
+        // and clobber the sentinel rather than sit unapplied in the channel.
         for _ in 0..3 {
             app.toggle_owner();
+            app.pump(&mut listings);
             app.toggle_owner();
+            app.pump(&mut listings);
         }
 
         assert!(app.show_owner);
@@ -1138,16 +1338,19 @@ mod tests {
     /// owner, and leaving with it shown should.
     #[test]
     fn the_next_directory_follows_the_column() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
 
         app.cd(&PathBuf::from("src"));
+        app.pump(&mut listings);
         assert!(
             !app.dir_listing.options().owners,
             "read the owner with the column hidden"
         );
 
         app.toggle_owner();
+        app.pump(&mut listings);
         app.cd(&PathBuf::from(".."));
+        app.pump(&mut listings);
         assert!(
             app.dir_listing.options().owners,
             "did not read the owner with the column shown"
@@ -1164,10 +1367,11 @@ mod tests {
     /// Without this the sort silently had nothing to compare.
     #[test]
     fn sorting_by_owner_reads_the_owner() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
         assert!(!app.dir_listing.options().owners);
 
         app.sort_or_reverse(SortField::Owner.default_mode());
+        app.pump(&mut listings);
         assert!(
             app.dir_listing.options().owners,
             "sorted by an owner that was never read"
@@ -1184,6 +1388,7 @@ mod tests {
         // hidden: the next directory has to sort by it too.
         assert!(!app.show_owner);
         app.cd(&PathBuf::from("src"));
+        app.pump(&mut listings);
         assert!(
             app.dir_listing.options().owners,
             "the next directory sorted by an owner it never read"
@@ -1195,10 +1400,11 @@ mod tests {
     /// rather than the values, since off Ceph there is no rctime to find.
     #[test]
     fn showing_the_time_reads_it_once() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
         assert!(!app.dir_listing.options().times);
 
         app.toggle_ctime();
+        app.pump(&mut listings);
         assert!(app.show_ctime);
         assert!(
             app.dir_listing.options().times,
@@ -1209,7 +1415,9 @@ mod tests {
         app.dir_listing.entries[0].ctime = Some(12_345);
         for _ in 0..3 {
             app.toggle_ctime();
+            app.pump(&mut listings);
             app.toggle_ctime();
+            app.pump(&mut listings);
         }
         assert_eq!(
             app.dir_listing.entries[0].ctime,
@@ -1220,9 +1428,10 @@ mod tests {
 
     #[test]
     fn sorting_by_time_reads_it() {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, mut listings) = app_at(".", Options::default());
 
         app.sort_or_reverse(SortField::CTime.default_mode());
+        app.pump(&mut listings);
         assert!(
             app.dir_listing.options().times,
             "sorted by a time that was never read"
@@ -1263,7 +1472,7 @@ mod tests {
     #[test]
     fn new_honors_the_startup_sort_mode() {
         let mode = SortMode::Normal(SortField::Name);
-        let app = App::new(Some(&PathBuf::from(".")), Options::sorted(mode)).unwrap();
+        let (app, _listings) = app_at(".", Options::sorted(mode));
         assert_eq!(app.dir_listing.sort_mode(), mode);
 
         let names: Vec<String> = app
@@ -1274,6 +1483,139 @@ mod tests {
         let mut ascending = names.clone();
         ascending.sort();
         assert_eq!(names, ascending, "listing is not in name order");
+    }
+
+    /// Cancelling keeps the directory on screen, and the worker's answer -- it may
+    /// well finish anyway, having lost the race to the cancel -- is dropped when it
+    /// lands rather than applied.
+    #[test]
+    fn cancelling_stays_put_and_orphans_the_answer() {
+        let (mut app, mut listings) = app_at(".", Options::default());
+        let before = app.cwd.clone();
+
+        app.cd(&PathBuf::from("src"));
+        assert!(app.is_reading());
+        app.cancel_listing();
+        assert!(!app.is_reading());
+        assert_eq!(app.cwd, before);
+
+        // The answer arrives regardless; feed it through and nothing may change.
+        let msg = listings.blocking_recv().expect("worker never answered");
+        app.on_listing_msg(msg);
+        assert_eq!(app.cwd, before, "a cancelled read was applied");
+    }
+
+    /// A second dispatch supersedes the first: both answers arrive, and only the
+    /// second may apply, whatever order the workers finish in.
+    #[test]
+    fn a_newer_read_supersedes_an_older_one() {
+        let (mut app, mut listings) = app_at(".", Options::default());
+
+        app.cd(&PathBuf::from("src"));
+        app.cd(&PathBuf::from("tests"));
+        app.pump(&mut listings);
+
+        assert_eq!(
+            app.cwd.file_name().unwrap().to_str().unwrap(),
+            "tests",
+            "the superseded read won"
+        );
+    }
+
+    /// The startup fallback: a bad path falls back to the fallback path, and the
+    /// warning that says so survives the fallback listing's arrival.
+    #[test]
+    fn a_failed_first_listing_falls_back_with_its_warning() {
+        let (mut app, mut listings) = App::new(Options::default());
+        app.start_listing(
+            PathBuf::from("does_not_exist_xyz"),
+            OnError::Fallback {
+                path: PathBuf::from("."),
+                warn: true,
+            },
+            false,
+        );
+        app.pump(&mut listings);
+
+        assert_eq!(app.cwd, PathBuf::from(".").canonicalize().unwrap());
+        let message = app.message.as_ref().expect("the warning was cleared");
+        assert!(
+            message.text.contains("does_not_exist_xyz"),
+            "wrong message: {}",
+            message.text
+        );
+        assert_eq!(
+            app.original_cwd.as_ref(),
+            Some(&app.cwd),
+            "the fallback should become the original directory"
+        );
+    }
+
+    /// A failed cd reports and stays put, as it always has.
+    #[test]
+    fn a_failed_cd_keeps_the_old_listing() {
+        let (mut app, mut listings) = app_at(".", Options::default());
+        let before = app.cwd.clone();
+
+        app.cd(&PathBuf::from("does_not_exist_xyz"));
+        app.pump(&mut listings);
+
+        assert_eq!(app.cwd, before);
+        assert!(matches!(
+            app.message.as_ref().map(|m| m.kind),
+            Some(MessageKind::Error)
+        ));
+    }
+
+    /// Esc and Ctrl-C cancel a read; neither quits, and in particular Ctrl-C must
+    /// not fall through to `c`, sort by count. Only q quits: a cancel key that
+    /// doubled as quit would make an extra press -- or one landing just after the
+    /// read finishes -- exit unintended.
+    #[test]
+    fn esc_and_ctrl_c_cancel_and_only_q_quits() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut app, _listings) = app_at(".", Options::default());
+
+        app.cd(&PathBuf::from("src"));
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.is_reading(), "Esc did not cancel the read");
+        assert!(!app.should_exit, "Esc quit instead of cancelling");
+
+        app.handle_key(KeyEvent::from(KeyCode::Esc));
+        assert!(!app.should_exit, "an idle Esc quit");
+
+        app.cd(&PathBuf::from("src"));
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(!app.is_reading(), "Ctrl-C did not cancel the read");
+        assert!(!app.should_exit);
+
+        let sorted_by = *app.dir_listing.sort_mode().field();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            *app.dir_listing.sort_mode().field(),
+            sorted_by,
+            "an idle Ctrl-C fell through to the count sort"
+        );
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('q')));
+        assert!(app.should_exit, "q did not quit");
+    }
+
+    /// The progress notice appears only once a read has been slow enough to
+    /// mention, and goes away with the read.
+    #[test]
+    fn progress_is_mentioned_only_for_a_slow_read() {
+        let (mut app, mut listings) = app_at(".", Options::default());
+
+        app.cd(&PathBuf::from("src"));
+        // Backdate the read instead of sleeping through the threshold.
+        app.pending.as_mut().unwrap().started = Instant::now() - 2 * PROGRESS_AFTER;
+        let notice = app.progress().expect("a slow read went unmentioned");
+        assert!(notice.text.contains("entries"), "{}", notice.text);
+
+        app.pump(&mut listings);
+        assert!(app.progress().is_none(), "the notice outlived the read");
     }
 
     #[test]

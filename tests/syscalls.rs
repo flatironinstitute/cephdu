@@ -10,13 +10,9 @@
 //!
 //! Needs strace and permission to ptrace, so it skips when either is missing.
 //!
-//! What this does *not* cover: `ls()` polls for Ctrl-C once per entry, and crossterm
-//! only issues a syscall for that when its event source initialises, which needs a
-//! controlling terminal. Under a test runner /dev/tty fails to open with ENXIO, so
-//! the poll is free here and the interface may well pay one more syscall per entry
-//! than these numbers show. Measuring it needs a real terminal:
-//!
-//!     strace -f -c -o /tmp/tui.trace cephdu --tui <dir>   # then press q
+//! These numbers hold for the interface too: its cancellation check between
+//! entries is an atomic load, not a syscall, so a listing costs the same whether
+//! flat mode or a worker thread runs it.
 
 use std::collections::BTreeMap;
 use std::fs;

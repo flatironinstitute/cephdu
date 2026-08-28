@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use std::path::PathBuf;
 
@@ -11,7 +11,7 @@ static PAGE_BY: usize = 10;
 static SCROLL_BY: usize = 4;
 
 pub const HELP: &[[&str; 2]] = &[
-    ["q, Esc", "Quit"],
+    ["q", "Quit"],
     ["Down, j", "Move cursor down"],
     ["Up, k", "Move cursor up"],
     ["Page Down", "Jump cursor down"],
@@ -33,7 +33,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["Home, g", "Select first entry"],
     ["End, G", "Select last entry"],
     ["r, F5", "Refresh"],
-    ["Ctrl-C", "Interrupt changing the directory"],
+    ["Esc, Ctrl-C", "Cancel reading a directory"],
     ["Space", "Go to original directory"],
 ];
 
@@ -119,8 +119,18 @@ impl App {
             KeyCode::Backspace => {
                 self.cd(&"..".into());
             }
-            KeyCode::Esc | KeyCode::Char('q') => {
+            KeyCode::Char('q') => {
                 self.should_exit = true;
+            }
+            // A cancel key must not double as a quit key: an extra press, or one
+            // landing just after the read finishes, would exit unintended. Hence
+            // Esc cancels and only q quits.
+            KeyCode::Esc => {
+                self.cancel_listing();
+            }
+            // Before the sort arm below, which must not swallow Ctrl-C as a 'c'.
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cancel_listing();
             }
             KeyCode::Char('n') => self.sort_or_reverse(app::SortField::Name.default_mode()),
             KeyCode::Char('s') => self.sort_or_reverse(app::SortField::Size.default_mode()),
@@ -130,7 +140,10 @@ impl App {
             KeyCode::Char('U') => self.sort_or_reverse(app::SortField::Owner.default_mode()),
             KeyCode::Char('T') => self.sort_or_reverse(app::SortField::CTime.default_mode()),
             KeyCode::Char(' ') => {
-                self.cd(&self.original_cwd.clone());
+                // None only until the first listing lands; nowhere to go back to.
+                if let Some(original) = self.original_cwd.clone() {
+                    self.cd(&original);
+                }
             }
             KeyCode::Char('u') => {
                 self.toggle_owner();

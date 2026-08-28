@@ -480,7 +480,9 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     app.render_header(header_area, frame.buffer_mut());
     app.render_list(main_area, frame.buffer_mut());
 
-    app.render_message(&app.message, message_area, frame.buffer_mut());
+    // A read in progress outranks whatever message was up before it.
+    let message = app.progress().or_else(|| app.message.clone());
+    app.render_message(&message, message_area, frame.buffer_mut());
 
     if let Some(popup) = &mut app.popup {
         let popup_areas = popup_rects(
@@ -521,11 +523,13 @@ mod tests {
         ]
     }
 
-    /// An app whose listing is synthetic, so the frame doesn't depend on the
-    /// filesystem the tests happen to run on. The cwd is faked for the same reason;
-    /// App::new only needs a readable directory to start from.
+    /// An app whose listing is synthetic and whose cwd is faked, so the frame
+    /// doesn't depend on the filesystem the tests happen to run on -- App::new
+    /// itself reads nothing. The receiver is dropped, which is fine because these
+    /// tests never dispatch a read: the listing already has owners and times, so
+    /// even `u` and `t` have nothing to fetch.
     fn app() -> App {
-        let mut app = App::new(Some(&PathBuf::from(".")), Options::default()).unwrap();
+        let (mut app, _listings) = App::new(Options::default());
         app.cwd = PathBuf::from("/ceph/users/alice");
         app.dir_listing = DirListing::from_entries(
             entries(),
@@ -533,13 +537,10 @@ mod tests {
             Options {
                 sort_mode: DEFAULT_SORT_MODE,
                 dirs_first: false,
-                // The entries carry owners and times, so this listing was read with
-                // both and pressing `u` or `t` has nothing to fetch.
                 owners: true,
                 times: true,
             },
         );
-        app.message(None);
         app
     }
 
