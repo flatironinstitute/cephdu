@@ -66,7 +66,7 @@ runtime, unit tests included. The moving parts and their traps:
   taken from a full readdir pass first: stats lean on readdir's prefetch staying cached, and on a huge
   directory a drain-then-stat ordering would let it expire.
 - The hidden `-j` flag (`Options::jobs`) fans the per-entry syscalls out over scoped worker threads,
-  `read_batched`. It is deliberately undocumented — it changes speed, never output, and may change or vanish —
+  `read_streamed`. It is deliberately undocumented — it changes speed, never output, and may change or vanish —
   so keep it out of the README and the help text; tests pin both the hiding and the output equality. The feed
   channel is bounded for the same prefetch reason as above, but streams rather than batching, because the
   readdir is itself a substantial serial cost (readdirplus, ~750µs/entry on Ceph) and overlapping it with the
@@ -276,8 +276,9 @@ dependency, deliberately — cargo already provides both paths.
   starting a process cancels and the numbers don't move with the libc or kernel underneath. Today a listing costs
   one `statx` per file, two `lgetxattr` per directory and no stat for a directory at all, and nothing else
   scales — that last part is the
-  assertion worth keeping, since an accidental per-entry syscall is what makes a large directory slow. Skips
-  without strace or ptrace permission. The numbers hold for the interface too: the cancellation check between
+  assertion worth keeping, since an accidental per-entry syscall is what makes a large directory slow.
+  `getdents64` is exempt from it, since a batched call grows by whole buffers as entries are added and
+  `readdir_is_batched` is what holds it to that. Skips without strace or ptrace permission. The numbers hold for the interface too: the cancellation check between
   entries is an atomic load, not a syscall.
 - [tests/ceph.rs](tests/ceph.rs) — the only coverage of the xattrs themselves, and the only tests that can't run
   in CI. They skip (not fail) with a `SKIP` notice when no CephFS is available, so `cargo test` is green

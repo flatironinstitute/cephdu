@@ -158,6 +158,13 @@ fn a_listing_costs_one_stat_per_file_and_two_xattrs_per_dir() {
         ] {
             let expected: BTreeMap<&str, i64> = expected.iter().copied().collect();
             for (name, (delta, _)) in measured {
+                // readdir is exempt: it is batched, so its count grows by whole
+                // buffers as entries are added -- 2 calls for 12 entries, 3 for
+                // 112 -- which is a boundary, not a per-entry cost. That it stays
+                // batched at all is readdir_is_batched's assertion.
+                if name == "getdents64" {
+                    continue;
+                }
                 let want = expected.get(name.as_str()).copied().unwrap_or(0);
                 assert_eq!(
                     *delta,
