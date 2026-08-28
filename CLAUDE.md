@@ -33,7 +33,8 @@ follows from that.
 
 Layering, roughly bottom-up:
 
-- [fs.rs](src/fs.rs) — the only `unsafe`/libc code: `lgetxattr` for the three r-attrs, `statfs` for
+- [fs.rs](src/fs.rs) — the only `unsafe`/libc code: `lgetxattr` for the three r-attrs and the non-recursive
+  entry count, `statfs` for
   filesystem-type detection, `getpwuid_r` for uid→name (memoized in a global `NAME_CACHE`). Returns `Option`
   everywhere; a missing xattr is normal, not an error.
 - [app.rs](src/app.rs) — all state. `App` holds the cwd, one `DirListing`, and the machinery for the listing in
@@ -60,7 +61,10 @@ runtime, unit tests included. The moving parts and their traps:
 - Cancellation is cooperative and stays so under any runtime: a thread mid-`lgetxattr` cannot be aborted, so
   `ls()` checks an atomic flag between entries (a load, not a syscall — [tests/syscalls.rs](tests/syscalls.rs)
   still holds) and returns `ErrorKind::Interrupted`. The flag lives in `ListingWatch`, shared worker/interface,
-  which also carries the entries-so-far counter the progress notice reads.
+  which also carries what the progress notice reads: the entries-so-far counter and, on Ceph, the expected
+  total, priced upfront from `ceph.dir.entries` — one more constant xattr read per listing, deliberately not
+  taken from a full readdir pass first: stats lean on readdir's prefetch staying cached, and on a huge
+  directory a drain-then-stat ordering would let it expire.
 - A worker's answer is applied only if its generation matches the one `pending` — superseding (a `cd` during a
   `cd`) and cancelling both orphan the old answer, which may still arrive and must be dropped, not applied.
   Anything that changes what a listing shows goes through `start_listing`/`on_listing_msg`; there is no
