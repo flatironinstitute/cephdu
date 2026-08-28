@@ -95,6 +95,10 @@ struct Cli {
     #[arg(short, long)]
     long: bool,
 
+    /// Open the interactive interface with the info panel shown
+    #[arg(short, long, conflicts_with_all = ["flat", "parseable", "long"])]
+    info: bool,
+
     // Metadata reads in flight at once. Deliberately hidden and absent from the
     // README: it changes speed, never output, and the flag may change or vanish.
     // Keep it out of any user-facing text.
@@ -200,7 +204,7 @@ fn main() -> Result<()> {
         &path,
         path_was_explicit,
         options,
-        args.exact,
+        &args,
     ));
 
     // cleanup terminal
@@ -248,10 +252,14 @@ async fn run_app<B: Backend>(
     path: &Path,
     path_was_explicit: bool,
     options: Options,
-    exact: bool,
+    args: &Cli,
 ) -> Result<()> {
     let (mut app, mut listings) = App::new(options);
-    app.exact = exact;
+    app.exact = args.exact;
+    if args.info {
+        // Zeros until the first listing lands, which recomputes it.
+        app.toggle_info();
+    }
     // Purely for the frame drawn before the first listing lands, which replaces it
     // with the canonical path.
     app.cwd = path.to_path_buf();

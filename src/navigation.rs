@@ -27,6 +27,7 @@ pub const HELP: &[[&str; 2]] = &[
     ["T", "Sort by change time"],
     ["t", "Toggle show change time (reads it if needed)"],
     ["d", "Toggle listing directories first"],
+    ["i", "Toggle the info panel (this level vs recursive)"],
     ["e", "Toggle exact sizes and counts"],
     ["?, h", "Show this help message"],
     ["Home, g", "Select first entry"],
@@ -161,6 +162,9 @@ impl App {
             }
             KeyCode::Char('?') | KeyCode::Char('h') => {
                 self.help();
+            }
+            KeyCode::Char('i') => {
+                self.toggle_info();
             }
             _ => {}
         }

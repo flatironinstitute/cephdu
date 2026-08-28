@@ -15,6 +15,7 @@ use chrono::{Datelike, Local};
 
 use crate::app::App;
 use crate::app::DirEntry;
+use crate::app::InfoStats;
 use crate::app::ListingStats;
 use crate::app::Message;
 use crate::app::MessageKind;
@@ -124,32 +125,25 @@ impl App {
         let title = Line::from(format!(" {} ", path)).bold();
         let stats = Line::from(stats).bold();
 
-        let helptitle = Line::from(" Press ? for help ").bold();
-
-        // Ordering that outlives a keypress needs to be visible, since the listing
-        // alone doesn't always reveal it: grouping is invisible when the directories
-        // happen to sort first anyway, and two fields can agree on an order.
-        let sort_mode = self.dir_listing.sort_mode();
-        let mut status = format!(
-            " {} {}",
-            sort_mode.field().label(),
-            if sort_mode.is_reversed() {
-                "↓"
-            } else {
-                "↑"
-            }
-        );
-        if self.dir_listing.dirs_first() {
-            status.push_str(" · dirs first");
-        }
-        status.push(' ');
-
+        // With the info panel below, the bottom border is a divider the panel's
+        // sides run through, so its corners become connectors -- and the status
+        // titles move down to the panel's bottom border, staying the frame's
+        // footer wherever that is.
         let block = Block::bordered()
             .title(title.left_aligned())
-            .title(stats.right_aligned())
-            .title_bottom(Line::from(status).bold().left_aligned())
-            .title_bottom(helptitle.right_aligned())
-            .border_set(border::THICK);
+            .title(stats.right_aligned());
+        let block = if self.info.is_some() {
+            block.border_set(symbols::border::Set {
+                bottom_left: symbols::line::THICK.vertical_right,
+                bottom_right: symbols::line::THICK.vertical_left,
+                ..border::THICK
+            })
+        } else {
+            block
+                .title_bottom(self.status_line().left_aligned())
+                .title_bottom(help_hint().right_aligned())
+                .border_set(border::THICK)
+        };
 
         let selected = self.dir_listing.selected();
         let items: Vec<ListItem> = self
@@ -195,6 +189,47 @@ impl App {
                 buf[(inner.x + x, inner.y + y)] = rows[((self.hscroll as u16) + x, y)].clone();
             }
         }
+    }
+
+    /// The panel under the listing, whose bottom border serves as its top and
+    /// carries the footer titles while it is open.
+    fn render_info(&self, rows: &[(&'static str, String)], area: Rect, buf: &mut Buffer) {
+        let block = Block::default()
+            .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
+            .border_set(border::THICK)
+            .title_bottom(self.status_line().left_aligned())
+            .title_bottom(help_hint().right_aligned());
+
+        let lhs = rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+        let text = rows
+            .iter()
+            .map(|(label, value)| format!(" {:>lhs$}:  {}", label, value))
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Paragraph::new(text).block(block).render(area, buf);
+    }
+
+    /// The footer's left half. Ordering that outlives a keypress needs to be
+    /// visible, since the listing alone doesn't always reveal it: grouping is
+    /// invisible when the directories happen to sort first anyway, and two
+    /// fields can agree on an order.
+    fn status_line(&self) -> Line<'static> {
+        let sort_mode = self.dir_listing.sort_mode();
+        let mut status = format!(
+            " {} {}",
+            sort_mode.field().label(),
+            if sort_mode.is_reversed() {
+                "↓"
+            } else {
+                "↑"
+            }
+        );
+        if self.dir_listing.dirs_first() {
+            status.push_str(" · dirs first");
+        }
+        status.push(' ');
+        Line::from(status).bold()
     }
 
     fn columns(&self) -> Columns {
@@ -246,6 +281,90 @@ impl App {
             })
             .render(area, buf);
     }
+}
+
+/// The info panel's rows. Which lines exist depends on what the filesystem
+/// provides, so the panel's height does too.
+fn info_rows(stats: &InfoStats, numbers: Numbers) -> Vec<(&'static str, String)> {
+    let size = |b: usize| numbers.size(Some(b), false);
+    let count = |n: usize| numbers.count(Some(n), false);
+
+    let mut rows: Vec<(&'static str, String)> = Vec::new();
+    if let Some(rbytes) = stats.rbytes {
+        rows.push(("Recursive size", size(rbytes)));
+    }
+    if let (Some(rentries), Some(rfiles), Some(rsubdirs)) =
+        (stats.rentries, stats.rfiles, stats.rsubdirs)
+    {
+        rows.push((
+            "Recursive entries",
+            format!(
+                "{} ({} files, {} dirs)",
+                count(rentries),
+                count(rfiles),
+                count(rsubdirs)
+            ),
+        ));
+    }
+    // The means are recursive too -- the label says so, since these sit nearest
+    // the this-level rows and position alone would suggest the wrong scope.
+    if let (Some(rbytes), Some(rfiles)) = (stats.rbytes, stats.rfiles)
+        && rfiles > 0
+    {
+        rows.push(("Recursive mean file size", size(rbytes / rfiles)));
+    }
+    // What a heavily-loaded MDS wants kept low. The divisor includes this
+    // directory as one of the directories, so a flat directory of N entries
+    // reads N per directory rather than dividing by zero; the numerator needs
+    // no such care, since only rsubdirs self-counts and it arrives here
+    // already subtracted.
+    if let (Some(rentries), Some(rsubdirs)) = (stats.rentries, stats.rsubdirs) {
+        rows.push((
+            "Recursive entries per dir",
+            format!("{:.1}", rentries as f64 / (rsubdirs + 1) as f64),
+        ));
+    }
+    let share = |level: usize, recursive: Option<usize>| match recursive {
+        Some(recursive) if recursive > 0 => {
+            format!(
+                "{:.1}% of recursive",
+                level as f64 / recursive as f64 * 100.0
+            )
+        }
+        _ => String::new(),
+    };
+
+    let size_share = share(stats.level_bytes, stats.rbytes);
+    rows.push((
+        "Size at this level",
+        if size_share.is_empty() {
+            size(stats.level_bytes)
+        } else {
+            format!("{} ({})", size(stats.level_bytes), size_share)
+        },
+    ));
+    // The share joins the parenthetical rather than trailing as a second one.
+    let entries_share = share(stats.level_files + stats.level_dirs, stats.rentries);
+    let entries_share = if entries_share.is_empty() {
+        entries_share
+    } else {
+        format!(", {}", entries_share)
+    };
+    rows.push((
+        "Entries at this level",
+        format!(
+            "{} ({} files, {} dirs{})",
+            count(stats.level_files + stats.level_dirs),
+            count(stats.level_files),
+            count(stats.level_dirs),
+            entries_share
+        ),
+    ));
+    rows
+}
+
+fn help_hint() -> Line<'static> {
+    Line::from(" Press ? for help ").bold()
 }
 
 fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
@@ -487,15 +606,25 @@ fn popup_rects(xsize: u16, ysize: u16, r: Rect) -> [Rect; 2] {
 }
 
 pub fn ui(frame: &mut Frame, app: &mut App) {
-    let [header_area, message_area, main_area] = Layout::vertical([
+    let rows = app
+        .info
+        .as_ref()
+        .map(|stats| info_rows(stats, Numbers::from_exact(app.exact)));
+    let panel_height = rows.as_ref().map_or(0, |rows| rows.len() as u16 + 1);
+
+    let [header_area, message_area, main_area, info_area] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(panel_height),
     ])
     .areas(frame.area());
 
     app.render_header(header_area, frame.buffer_mut());
     app.render_list(main_area, frame.buffer_mut());
+    if let Some(rows) = &rows {
+        app.render_info(rows, info_area, frame.buffer_mut());
+    }
 
     // A read in progress outranks whatever message was up before it.
     let message = app.progress().or_else(|| app.message.clone());
@@ -1116,6 +1245,109 @@ mod tests {
         assert!(border.contains("dirs first"), "{}", border);
         assert!(border.contains("Press ? for help"), "{}", border);
         assert_eq!(border.chars().count(), 80, "{}", border);
+    }
+
+    /// The rows a Ceph directory gets, from synthetic stats so every branch is
+    /// certain: both this-level rows carry their share of the recursive value.
+    #[test]
+    fn info_rows_price_this_level_against_recursive() {
+        let stats = InfoStats {
+            level_bytes: 250,
+            level_files: 3,
+            level_dirs: 2,
+            rbytes: Some(1_000),
+            rentries: Some(50),
+            rfiles: Some(40),
+            rsubdirs: Some(10),
+        };
+        let rows = info_rows(&stats, Numbers::Exact);
+        let row = |label: &str| {
+            rows.iter()
+                .find(|(l, _)| *l == label)
+                .unwrap_or_else(|| panic!("no {:?} row in {:?}", label, rows))
+                .1
+                .clone()
+        };
+
+        assert_eq!(row("Size at this level"), "250 (25.0% of recursive)");
+        assert_eq!(
+            row("Entries at this level"),
+            "5 (3 files, 2 dirs, 10.0% of recursive)"
+        );
+        assert_eq!(row("Recursive entries"), "50 (40 files, 10 dirs)");
+        assert_eq!(row("Recursive mean file size"), "25");
+        // Divides by the 10 subdirs plus this directory itself; the 50 entries
+        // are everything beneath it, self already excluded.
+        assert_eq!(row("Recursive entries per dir"), "4.5");
+        assert!(
+            !rows.iter().any(|(l, _)| l.contains("files per dir")),
+            "{:?}",
+            rows
+        );
+
+        // Off Ceph the recursive rows and the shares disappear.
+        let rows = info_rows(
+            &InfoStats {
+                rbytes: None,
+                rentries: None,
+                rfiles: None,
+                rsubdirs: None,
+                ..stats
+            },
+            Numbers::Exact,
+        );
+        assert_eq!(rows.len(), 2, "{:?}", rows);
+        assert!(!rows[0].1.contains('%'), "{:?}", rows);
+    }
+
+    /// The info panel on the synthetic listing: no filesystem, so the recursive
+    /// lines are absent and this level is computed from the entries in hand --
+    /// one 1.0 MB file beside two directories.
+    #[test]
+    fn the_info_panel_reports_this_level() {
+        let mut app = app();
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+
+        let lines = frame_sized(&mut app, 80, 24);
+        let text = lines.join("\n");
+        assert!(text.contains("Size at this level"), "{}", text);
+        assert!(text.contains("1.0 MB"), "{}", text);
+        assert!(text.contains("(1 files, 2 dirs)"), "{}", text);
+        assert!(
+            !text.contains("Recursive"),
+            "recursive lines appeared without a filesystem:\n{}",
+            text
+        );
+        // The panel hangs off the listing's bottom border, so that border's
+        // corners become connectors and the panel's own bottom closes the frame.
+        let divider = lines
+            .iter()
+            .find(|l| l.starts_with('┣'))
+            .expect("no connected divider");
+        assert!(
+            !divider.contains("size") && !divider.contains("help"),
+            "the footer titles stayed on the divider: {}",
+            divider
+        );
+        // The footer belongs to the frame's bottom, wherever that is.
+        let bottom = lines.last().unwrap();
+        assert!(
+            bottom.starts_with('┗'),
+            "the panel does not close the frame"
+        );
+        assert!(
+            bottom.contains("size ↓") && bottom.contains("Press ? for help"),
+            "the footer titles are not on the bottom border: {}",
+            bottom
+        );
+
+        app.handle_key(KeyEvent::from(KeyCode::Char('i')));
+        let text = frame_sized(&mut app, 80, 24).join("\n");
+        assert!(
+            !text.contains("at this level"),
+            "i did not close the panel:\n{}",
+            text
+        );
     }
 
     /// The popup shows as much of its text as the terminal has room for, so on a

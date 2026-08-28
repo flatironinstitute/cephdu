@@ -65,6 +65,7 @@ Options:
   -d, --dirs-first  List directories before files
   -e, --exact       Show sizes and counts in full instead of scaled to a unit
   -l, --long        Show the owner and directory times, which cost extra syscalls. Implies -f
+  -i, --info        Open the interactive interface with the info panel shown
   -h, --help        Print help
 ```
 
@@ -143,6 +144,31 @@ has happened in since it was made shows the epoch, the usual way a Unix timestam
 says it was never set. `ls -l` shows a date there instead, because it shows the
 directory's *own* mtime, which creation does set. Creating something inside a
 directory does set the parent's, so only the leaves of a fresh tree read the epoch.
+
+### Directory info
+Every number in the listing is recursive, so the non-recursive ones live in a
+panel that `i` toggles under the listing, labeled in words:
+
+```
+┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
+┃            Recursive size:  154.0 TB                                     ┃
+┃         Recursive entries:  4.4 M (4.1 M files, 325.9 K dirs)            ┃
+┃  Recursive mean file size:  37.5 MB                                      ┃
+┃ Recursive entries per dir:  13.5                                         ┃
+┃        Size at this level:  1.1 GB (0.0% of recursive)                   ┃
+┃     Entries at this level:  230 (10 files, 220 dirs, 0.0% of recursive)  ┃
+┗ size ↓ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Press ? for help ┛
+```
+
+"At this level" means the files directly in this directory, the way `du -S`
+counts — so that line answers whether the usage is here or somewhere below. The
+panel follows you as you navigate, and `-i` opens the interface with it shown. Its this-level numbers come from the listing
+already in hand; the recursive ones are read from the directory's own attributes
+when the panel opens or the directory changes, four reads in all, so it costs
+nothing per entry. Off Ceph the recursive lines are absent. The recursive lines
+are a consistent snapshot, which can disagree slightly with the border's totals
+while Ceph is still propagating recent changes; each number is individually
+true.
 
 ### Reading the border
 The top border shows the current path on the left and the directory's totals on
