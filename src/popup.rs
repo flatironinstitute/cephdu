@@ -1,7 +1,5 @@
 use ratatui::widgets::ScrollbarState;
 
-use crate::ui::POPUP_TEXT_HEIGHT;
-
 #[derive(Debug)]
 pub struct Popup {
     pub title: String,
@@ -10,6 +8,11 @@ pub struct Popup {
     pub text_width: usize,
     pub text_height: usize,
     scroll: usize,
+    /// Rows of text on screen, which only the renderer knows -- it depends on the
+    /// terminal. Zero until the first frame, and everything that depends on it is
+    /// re-clamped when it changes, so a key pressed before that frame can't leave
+    /// the scroll out of range.
+    view_height: usize,
     pub scrollbar_state: ScrollbarState,
 }
 
@@ -30,10 +33,19 @@ impl Popup {
             text_width,
             text_height,
             scroll: 0,
-            scrollbar_state: ScrollbarState::default()
-                .position(0)
-                .content_length(text_height.saturating_sub(POPUP_TEXT_HEIGHT)),
+            view_height: 0,
+            scrollbar_state: ScrollbarState::default().position(0),
         }
+    }
+
+    /// Tell the popup how many rows of text it is being drawn into.
+    pub fn set_view_height(&mut self, view_height: usize) {
+        if view_height == self.view_height {
+            return;
+        }
+        self.view_height = view_height;
+        // A taller terminal can leave the scroll past the new end.
+        self.scroll_to(self.scroll);
     }
     pub fn scroll(&self) -> usize {
         self.scroll
@@ -45,11 +57,21 @@ impl Popup {
 
     pub fn scroll_to(&mut self, line: usize) -> usize {
         self.scroll = line.min(self.max_scroll());
-        self.scrollbar_state = self.scrollbar_state.position(self.scroll);
+        self.scrollbar_state = self
+            .scrollbar_state
+            .position(self.scroll)
+            .content_length(self.max_scroll());
         self.scroll
     }
 
-    fn max_scroll(&self) -> usize {
-        self.text_height.saturating_sub(POPUP_TEXT_HEIGHT)
+    pub fn scroll_to_end(&mut self) -> usize {
+        self.scroll_to(usize::MAX)
+    }
+
+    /// The first line that can be shown at the top with text still filling the
+    /// view. Zero when the whole text fits, which is also when the scrollbar has
+    /// nothing to say.
+    pub fn max_scroll(&self) -> usize {
+        self.text_height.saturating_sub(self.view_height)
     }
 }

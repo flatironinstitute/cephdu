@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use crate::app;
 use crate::app::App;
-use crate::ui::POPUP_TEXT_HEIGHT;
 
 static PAGE_BY: usize = 10;
 /// Columns per horizontal scroll step.
@@ -75,7 +74,7 @@ impl App {
                 }
                 KeyCode::End | KeyCode::Char('G') => {
                     if let Some(popup) = &mut self.popup {
-                        popup.scroll_to(POPUP_TEXT_HEIGHT);
+                        popup.scroll_to_end();
                     }
                 }
                 _ => {}
