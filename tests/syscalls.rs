@@ -184,6 +184,52 @@ fn a_listing_costs_one_stat_per_file_and_two_xattrs_per_dir() {
     }
 }
 
+/// Concurrent reads (the hidden -j) must issue the same metadata syscalls per
+/// entry as reading one at a time -- only their timing changes. Only statx and
+/// lgetxattr are pinned here: thread plumbing (futex and friends) scales with
+/// the work, so the strict nothing-else-scales assertion belongs to the
+/// sequential path above.
+#[test]
+fn concurrency_adds_no_metadata_syscalls() {
+    if !strace_works() {
+        eprintln!("SKIP: strace unavailable or ptrace not permitted");
+        return;
+    }
+
+    const FILES: u64 = 100;
+    const DIRS: u64 = 20;
+
+    let base = tree("syscalls_j_base", 10, 2);
+    let more_files = tree("syscalls_j_files", 10 + FILES as usize, 2);
+    let more_dirs = tree("syscalls_j_dirs", 10, 2 + DIRS as usize);
+
+    let flags = &["-j", "4"];
+    let base = counts(&base, flags);
+    let files = slope(&base, &counts(&more_files, flags), FILES);
+    let dirs = slope(&base, &counts(&more_dirs, flags), DIRS);
+    report("added files [-j 4]", &files, FILES);
+    report("added dirs [-j 4]", &dirs, DIRS);
+
+    for (what, measured, name, want) in [
+        ("file", &files, "statx", 1),
+        ("file", &files, "lgetxattr", 0),
+        ("dir", &dirs, "statx", 0),
+        ("dir", &dirs, "lgetxattr", 2),
+    ] {
+        let (delta, _) = measured.get(name).copied().unwrap_or((0, 0.0));
+        let added = if what == "file" { FILES } else { DIRS };
+        assert_eq!(
+            delta,
+            want * added as i64,
+            "with -j 4, each {} costs {} {} calls, expected {}",
+            what,
+            delta as f64 / added as f64,
+            name,
+            want
+        );
+    }
+}
+
 /// readdir is batched, so it must not cost a syscall per entry either. Counted
 /// separately because the batch size is the kernel's business, not ours.
 #[test]

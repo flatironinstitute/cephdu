@@ -539,6 +539,7 @@ mod tests {
                 dirs_first: false,
                 owners: true,
                 times: true,
+                jobs: 1,
             },
         );
         app

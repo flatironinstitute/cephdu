@@ -94,6 +94,12 @@ struct Cli {
     /// Show the owner and directory times, which cost extra syscalls. Implies -f.
     #[arg(short, long)]
     long: bool,
+
+    // Metadata reads in flight at once. Deliberately hidden and absent from the
+    // README: it changes speed, never output, and the flag may change or vanish.
+    // Keep it out of any user-facing text.
+    #[arg(short = 'j', hide = true, default_value_t = 1)]
+    jobs: usize,
 }
 
 /// The startup sort order, mirroring the interface's sort keys. Each field starts
@@ -173,6 +179,7 @@ fn main() -> Result<()> {
         // Ordering by one of these needs it read, whether or not it is shown.
         owners: args.long || *sort_mode.field() == SortField::Owner,
         times: args.long || *sort_mode.field() == SortField::CTime,
+        jobs: args.jobs.max(1),
     };
 
     if let Some(format) = format {
