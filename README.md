@@ -129,11 +129,12 @@ it conflicts with `--tui`. Without it, `--flat` drops the owner column, while ev
 other column stays and shows `-` for what is missing; `--parseable` always keeps all
 six fields.
 
-The interface asks instead: `u` and `t` read what they need when pressed and keep it
-afterwards, so toggling a column off and on costs nothing. Moving to another
-directory or refreshing reads afresh, and reads only what the visible columns and the
-current sort need — so ordering by owner or by change time fetches it whether or not
-the column is on screen.
+The interface asks instead: `u` and `t` fetch just the missing values for the listing
+already on screen — not a re-read of the directory — and keep them for as long as you
+stay there, so toggling the columns in any order costs nothing after the first fetch
+of each. Moving to another directory or refreshing reads afresh, and reads only what
+the visible columns and the current sort need — so ordering by owner or by change
+time fetches it whether or not the column is on screen.
 
 A directory's time is Ceph's `rctime`: the newest ctime anywhere beneath it, its own
 included, so changing only its permissions moves it. It is a propagated value that

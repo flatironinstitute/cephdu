@@ -136,7 +136,113 @@ impl ListingWatch {
 /// A listing worker's answer. `generation` says which request it answers.
 pub struct ListingMsg {
     generation: u64,
-    result: Result<(PathBuf, DirListing), std::io::Error>,
+    result: Result<Fetched, std::io::Error>,
+}
+
+/// What a worker fetched: a whole listing (a cd or refresh), or columns to add
+/// to the listing already on screen. Columns are how a toggle or a sort acquires
+/// what the listing was read without: the entries are already in hand, so only
+/// the missing values are fetched -- no readdir, and nothing already read is
+/// touched, which is what keeps every column cached until the directory itself
+/// is left or refreshed.
+enum Fetched {
+    Listing(PathBuf, Box<DirListing>),
+    Columns {
+        /// Which columns the patches carry (only `owners`/`times` meaningful).
+        added: Options,
+        patches: Vec<ColumnPatch>,
+    },
+}
+
+/// One entry's worth of column fetching: what to read, keyed back by name.
+struct ColumnTask {
+    name: String,
+    path: PathBuf,
+    kind: EntryKind,
+    uid: Option<u32>,
+    gid: Option<u32>,
+}
+
+/// The values fetched for one entry. A field is only applied if `added` names
+/// its column, so a `None` here is a real answer (nothing there), not a gap.
+struct ColumnPatch {
+    name: String,
+    ctime: Option<usize>,
+    user: Option<String>,
+    group: Option<String>,
+}
+
+/// The per-entry work of a column fetch. A directory's time is one xattr and its
+/// owner one stat; a file's time and ids were kept from the stat the listing
+/// already did, so its owner is just the uid-to-name lookup.
+fn fetch_columns_for(task: &ColumnTask, added: &Options) -> ColumnPatch {
+    let ctime = if added.times && task.kind == EntryKind::Dir {
+        get_rctime(&task.path)
+    } else {
+        None
+    };
+
+    let (user, group) = if added.owners {
+        let (uid, gid) = if task.kind == EntryKind::Dir {
+            match std::fs::symlink_metadata(&task.path) {
+                Ok(stat) => (Some(stat.uid()), Some(stat.gid())),
+                // The entry may be gone by now; an unknowable owner, not an error.
+                Err(_) => (None, None),
+            }
+        } else {
+            (task.uid, task.gid)
+        };
+        (uid.and_then(name_or_id), gid.and_then(name_or_id))
+    } else {
+        (None, None)
+    };
+
+    ColumnPatch {
+        name: task.name.clone(),
+        ctime,
+        user,
+        group,
+    }
+}
+
+/// Run the column fetches, `jobs` at a time. No feed channel here, unlike
+/// `read_streamed`: the tasks are already in memory, so there is no readdir to
+/// overlap with or to pace. Cancellation just stops early -- the answer is
+/// already orphaned on the other side.
+fn fetch_columns(tasks: &[ColumnTask], added: &Options, watch: &ListingWatch) -> Vec<ColumnPatch> {
+    let one = |task: &ColumnTask| {
+        let patch = fetch_columns_for(task, added);
+        watch.saw_one();
+        patch
+    };
+
+    if added.jobs <= 1 {
+        tasks
+            .iter()
+            .take_while(|_| !watch.cancelled())
+            .map(one)
+            .collect()
+    } else {
+        std::thread::scope(|s| {
+            let workers: Vec<_> = (0..added.jobs)
+                .map(|w| {
+                    s.spawn(move || {
+                        tasks
+                            .iter()
+                            .skip(w)
+                            .step_by(added.jobs)
+                            .take_while(|_| !watch.cancelled())
+                            .map(one)
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .flat_map(|w| w.join().unwrap())
+                .collect()
+        })
+    }
 }
 
 /// A listing not yet arrived: the request's identity, its watch, and what to do if
@@ -194,6 +300,10 @@ pub struct DirEntry {
     pub ctime: Option<usize>,
     pub user: Option<String>,
     pub group: Option<String>,
+    /// Kept from whatever stat the entry already had, whether or not the owner
+    /// was resolved: showing the owner later then costs a file nothing.
+    pub(crate) uid: Option<u32>,
+    pub(crate) gid: Option<u32>,
 }
 
 impl DirEntry {
@@ -245,10 +355,8 @@ impl DirEntry {
             name_str.to_string()
         };
 
-        let name_or_id = |id: u32| id_to_name(id).unwrap_or_else(|| format!("{}", id));
-
         let (user, group) = match stat.as_ref().filter(|_| options.owners) {
-            Some(stat) => (Some(name_or_id(stat.uid())), Some(name_or_id(stat.gid()))),
+            Some(stat) => (name_or_id(stat.uid()), name_or_id(stat.gid())),
             None => (None, None),
         };
 
@@ -260,6 +368,8 @@ impl DirEntry {
             ctime,
             user,
             group,
+            uid: stat.as_ref().map(|s| s.uid()),
+            gid: stat.as_ref().map(|s| s.gid()),
         }
     }
 }
@@ -385,39 +495,81 @@ impl App {
     /// so that one blocked in a syscall can never stall anything else -- quitting
     /// included -- and so this needs no runtime to be running.
     pub fn start_listing(&mut self, path: PathBuf, on_error: OnError, preserve_message: bool) {
+        // What a new directory fetches follows the columns and sort, not what the
+        // current listing happened to be read with: leaving a directory with the
+        // owner hidden should not make the next one pay for it.
+        let options = self.needs();
+        let (generation, watch, tx) = self.supersede(path.clone(), on_error, preserve_message);
+        let worker = move || {
+            let result = path.canonicalize().and_then(|canon| {
+                DirListing::from_watched(&canon, options, &watch)
+                    .map(|l| Fetched::Listing(canon, Box::new(l)))
+            });
+            // The receiver is gone only when the app is; nowhere to report to.
+            let _ = tx.send(ListingMsg { generation, result });
+        };
+        std::thread::spawn(worker);
+    }
+
+    /// Fetch `added`'s columns for the listing on screen and merge them in,
+    /// leaving every other column exactly as it is. This is how a toggle or a
+    /// sort acquires what the listing was read without: the entries are already
+    /// in hand, so a whole re-read -- readdir, sizes, counts -- would fetch
+    /// nothing it doesn't already have.
+    fn start_columns(&mut self, added: Options) {
+        let tasks: Vec<ColumnTask> = self
+            .dir_listing
+            .entries
+            .iter()
+            // A file's time and ids came with the stat the listing already did,
+            // so only the owner lookup can be outstanding for it.
+            .filter(|e| added.owners || e.kind == EntryKind::Dir)
+            .map(|e| ColumnTask {
+                name: e.name.clone(),
+                // The directory `/` is display, not filename.
+                path: self.cwd.join(e.name.trim_end_matches('/')),
+                kind: e.kind,
+                uid: e.uid,
+                gid: e.gid,
+            })
+            .collect();
+
+        let (generation, watch, tx) = self.supersede(self.cwd.clone(), OnError::Message, false);
+        // The whole read is priced by construction; no xattr needed.
+        watch.set_total(tasks.len());
+        let worker = move || {
+            let patches = fetch_columns(&tasks, &added, &watch);
+            let _ = tx.send(ListingMsg {
+                generation,
+                result: Ok(Fetched::Columns { added, patches }),
+            });
+        };
+        std::thread::spawn(worker);
+    }
+
+    /// Supersede whatever read is in flight and register the new one. The caller
+    /// spawns the worker with the handles this returns.
+    fn supersede(
+        &mut self,
+        path: PathBuf,
+        on_error: OnError,
+        preserve_message: bool,
+    ) -> (u64, Arc<ListingWatch>, UnboundedSender<ListingMsg>) {
         if let Some(old) = self.pending.take() {
             old.watch.cancel();
         }
         self.generation += 1;
-        let generation = self.generation;
         let watch = Arc::new(ListingWatch::new());
-        // What the read fetches follows the columns and sort, not what the current
-        // listing happened to be read with: leaving a directory with the owner
-        // hidden should not make the next one pay for it.
-        let options = self.needs();
-
-        let tx = self.tx.clone();
-        let worker = {
-            let path = path.clone();
-            let watch = watch.clone();
-            move || {
-                let result = path.canonicalize().and_then(|canon| {
-                    DirListing::from_watched(&canon, options, &watch).map(|l| (canon, l))
-                });
-                // The receiver is gone only when the app is; nowhere to report to.
-                let _ = tx.send(ListingMsg { generation, result });
-            }
-        };
-        std::thread::spawn(worker);
 
         self.pending = Some(Pending {
-            generation,
+            generation: self.generation,
             path,
-            watch,
+            watch: watch.clone(),
             started: Instant::now(),
             on_error,
             preserve_message,
         });
+        (self.generation, watch, self.tx.clone())
     }
 
     /// Apply a worker's answer, unless it answers a request that is no longer the
@@ -429,12 +581,18 @@ impl App {
         let pending = self.pending.take().unwrap();
 
         match msg.result {
-            Ok((path, listing)) => {
+            Ok(Fetched::Listing(path, mut listing)) => {
+                // The sort or grouping may have changed while the read was in
+                // flight; the screen's current choice wins over dispatch-time's.
+                if listing.dirs_first() != self.dir_listing.dirs_first() {
+                    listing.toggle_dirs_first();
+                }
+                listing.sort(self.dir_listing.sort_mode());
                 // Record which entry was highlighted in case we navigate back.
                 // Saved now, not at dispatch, so moving the cursor while the read
                 // ran isn't undone.
                 self.save_selected();
-                self.dir_listing = listing;
+                self.dir_listing = *listing;
                 self.cwd = path;
                 if self.original_cwd.is_none() {
                     self.original_cwd = Some(self.cwd.clone());
@@ -453,6 +611,13 @@ impl App {
                 self.restore_selected();
                 // A column toggled or a sort begun while the read ran may need
                 // more than it fetched.
+                self.fetch_if_needed();
+            }
+            Ok(Fetched::Columns { added, patches }) => {
+                self.save_selected();
+                self.dir_listing.absorb(added, patches);
+                // The merge re-sorts, so the cursor follows its entry by name.
+                self.restore_selected();
                 self.fetch_if_needed();
             }
             Err(e) => match pending.on_error {
@@ -534,10 +699,22 @@ impl App {
     /// `options` records what the listing *has*, so one that already has it is left
     /// alone however many times a column is toggled.
     fn fetch_if_needed(&mut self) {
+        // Whatever lands next -- a cd, a refresh, another column -- re-checks on
+        // arrival, so deferring here converges on the right target instead of
+        // cancelling an in-flight read to fetch columns for a directory that is
+        // about to be replaced.
+        if self.pending.is_some() {
+            return;
+        }
         let needs = self.needs();
         let has = self.dir_listing.options;
-        if (needs.owners && !has.owners) || (needs.times && !has.times) {
-            self.cd(&self.cwd.clone());
+        let added = Options {
+            owners: needs.owners && !has.owners,
+            times: needs.times && !has.times,
+            ..needs
+        };
+        if added.owners || added.times {
+            self.start_columns(added);
         }
     }
 
@@ -877,6 +1054,44 @@ impl DirListing {
         self.options.dirs_first
     }
 
+    /// Merge fetched columns into the listing, touching nothing else: every
+    /// value the listing already has stays exactly as it is. Entries are matched
+    /// by name, so one that vanished since the listing was read is skipped. The
+    /// listing then re-sorts, since the point of fetching a column is often to
+    /// order by it.
+    fn absorb(&mut self, added: Options, patches: Vec<ColumnPatch>) {
+        let index: HashMap<String, usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.name.clone(), i))
+            .collect();
+
+        for patch in patches {
+            let Some(&i) = index.get(&patch.name) else {
+                continue;
+            };
+            let entry = &mut self.entries[i];
+            // Only a directory's time was fetched; a file's came with its stat
+            // and must not be clobbered by the patch's placeholder.
+            if added.times && entry.kind == EntryKind::Dir {
+                entry.ctime = patch.ctime;
+            }
+            if added.owners {
+                entry.user = patch.user;
+                entry.group = patch.group;
+            }
+        }
+
+        self.options.owners |= added.owners;
+        self.options.times |= added.times;
+        sort(
+            &mut self.entries,
+            self.options.sort_mode,
+            self.options.dirs_first,
+        );
+    }
+
     pub fn toggle_dirs_first(&mut self) {
         self.options.dirs_first = !self.options.dirs_first;
         sort(
@@ -901,7 +1116,13 @@ fn dotdot_entry() -> DirEntry {
         ctime: None,
         user: None,
         group: None,
+        uid: None,
+        gid: None,
     }
+}
+
+fn name_or_id(id: u32) -> Option<String> {
+    Some(id_to_name(id).unwrap_or_else(|| format!("{}", id)))
 }
 
 /// The largest size and rentries in the listing, which set the gauge scales.
@@ -1123,6 +1344,8 @@ mod tests {
             ctime: Some(size),
             user: Some("alice".to_string()),
             group: Some("scc".to_string()),
+            uid: None,
+            gid: None,
         }
     }
 
@@ -1546,6 +1769,115 @@ mod tests {
             app.dir_listing.entries[0].ctime,
             Some(12_345),
             "the directory was read again"
+        );
+    }
+
+    /// Fetching one column must leave every other exactly as it is: the columns
+    /// cache independently, and only leaving or refreshing the directory drops
+    /// them. Alternating `u` and `t` used to pay for the same data twice, because
+    /// the fetch was a whole re-read built from what was currently shown.
+    #[test]
+    fn fetching_one_column_leaves_the_others_in_place() {
+        let (mut app, mut listings) = app_at(".", Options::default());
+
+        app.toggle_owner();
+        app.pump(&mut listings);
+        assert!(
+            app.dir_listing.options().owners,
+            "the first show did not read"
+        );
+
+        // Hidden, but still read -- the cache that makes re-showing free.
+        app.toggle_owner();
+        app.pump(&mut listings);
+        assert!(app.dir_listing.options().owners);
+
+        // Values only a re-read of the listing could overwrite: fetching the
+        // time must not refetch the owner, the sizes, or anything else in hand.
+        app.dir_listing.entries[0].user = Some("sentinel".to_string());
+        app.dir_listing.entries[0].size = Some(424_242);
+
+        app.toggle_ctime();
+        app.pump(&mut listings);
+        assert!(app.dir_listing.options().times, "the time was not read");
+        assert!(
+            app.dir_listing.options().owners,
+            "the fetch for the time dropped the owner"
+        );
+        let planted = app
+            .dir_listing
+            .entries
+            .iter()
+            .find(|e| e.size == Some(424_242))
+            .expect("the fetch for the time re-read the sizes");
+        assert_eq!(
+            planted.user.as_deref(),
+            Some("sentinel"),
+            "the fetch for the time re-read the owner"
+        );
+
+        // So showing the owner again costs nothing.
+        app.toggle_owner();
+        assert!(
+            !app.is_reading(),
+            "showing the owner again re-read the directory"
+        );
+    }
+
+    /// The point of fetching a column is often to order by it, so the merge
+    /// re-sorts. Synthetic listing and patches, so the values are certain.
+    #[test]
+    fn absorbing_a_column_re_sorts_by_it() {
+        let mut listing = DirListing::from_entries(
+            vec![
+                DirEntry {
+                    ctime: None,
+                    ..entry("young/", 1)
+                },
+                DirEntry {
+                    ctime: None,
+                    ..entry("old/", 2)
+                },
+            ],
+            false,
+            Options::sorted(SortField::CTime.default_mode()),
+        );
+        // Times unknown, so the order is the name tie-break.
+        assert_eq!(displayed(&listing), ["old/", "young/"]);
+
+        listing.absorb(
+            Options {
+                times: true,
+                ..Options::default()
+            },
+            vec![
+                ColumnPatch {
+                    name: "young/".to_string(),
+                    ctime: Some(2_000),
+                    user: None,
+                    group: None,
+                },
+                ColumnPatch {
+                    name: "old/".to_string(),
+                    ctime: Some(1_000),
+                    user: None,
+                    group: None,
+                },
+                // An entry that vanished between the listing and the fetch.
+                ColumnPatch {
+                    name: "gone/".to_string(),
+                    ctime: Some(3_000),
+                    user: None,
+                    group: None,
+                },
+            ],
+        );
+
+        assert!(listing.options().times);
+        assert_eq!(
+            displayed(&listing),
+            ["young/", "old/"],
+            "the merged times did not re-sort the listing"
         );
     }
 
