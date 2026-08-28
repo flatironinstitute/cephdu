@@ -21,7 +21,18 @@ use crate::app::MessageKind;
 use crate::format::{CTIME_FMT_WIDTH, Numbers, ctime_str};
 use crate::popup::Popup;
 
-pub const POPUP_TEXT_HEIGHT: usize = 10;
+/// Rows of text the popup shows: as many as its text has, up to what the frame
+/// can hold. `CHROME` is what the popup costs besides text -- a border above and
+/// below it, two rows of footer -- plus a row of margin top and bottom, so it
+/// never sits edge to edge. `MIN` wins on a terminal too short for even that,
+/// where an unusable popup still beats none.
+fn popup_text_height(frame_height: u16, text_height: usize) -> usize {
+    const CHROME: u16 = 6;
+    const MIN: usize = 3;
+
+    let room = frame_height.saturating_sub(CHROME) as usize;
+    text_height.min(room).max(MIN)
+}
 
 const GAUGE_WIDTH: usize = 20;
 /// The colors the interface names, for their meaning rather than their shade.
@@ -239,8 +250,10 @@ impl App {
 
 fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
     let top_border_set = symbols::border::Set {
-        // Connect the top block with the bottom block
+        // Connect the top block with the bottom block. Both corners: without a
+        // scrollbar drawn over it, the right one is on show too.
         bottom_left: symbols::line::THICK.vertical_right,
+        bottom_right: symbols::line::THICK.vertical_left,
         ..symbols::border::THICK
     };
 
@@ -269,11 +282,15 @@ fn render_popup(popup: &mut Popup, areas: [Rect; 2], buf: &mut Buffer) {
     paragraph.render(areas[0], buf);
     footer.render(areas[1], buf);
 
-    Scrollbar::new(ScrollbarOrientation::VerticalRight).render(
-        areas[0],
-        buf,
-        &mut popup.scrollbar_state,
-    );
+    // Nothing to scroll when the text fits, which on a tall enough terminal is
+    // the usual case.
+    if popup.max_scroll() > 0 {
+        Scrollbar::new(ScrollbarOrientation::VerticalRight).render(
+            areas[0],
+            buf,
+            &mut popup.scrollbar_state,
+        );
+    }
 }
 
 /// Keep the end of a path when it is too long to show: the deepest components are
@@ -485,9 +502,13 @@ pub fn ui(frame: &mut Frame, app: &mut App) {
     app.render_message(&message, message_area, frame.buffer_mut());
 
     if let Some(popup) = &mut app.popup {
+        // Only the renderer knows the terminal's height, so this is where the
+        // popup learns how much of its text is on screen.
+        let text_height = popup_text_height(frame.area().height, popup.text_height);
+        popup.set_view_height(text_height);
         let popup_areas = popup_rects(
             popup.text_width as u16 + 4,
-            POPUP_TEXT_HEIGHT as u16 + 2,
+            text_height as u16 + 2,
             frame.area(),
         );
         render_popup(popup, popup_areas, frame.buffer_mut());
@@ -1095,6 +1116,69 @@ mod tests {
         assert!(border.contains("dirs first"), "{}", border);
         assert!(border.contains("Press ? for help"), "{}", border);
         assert_eq!(border.chars().count(), 80, "{}", border);
+    }
+
+    /// The popup shows as much of its text as the terminal has room for, so on a
+    /// tall one the help needs no scrolling at all.
+    #[test]
+    fn the_help_popup_grows_with_the_terminal() {
+        let rows_shown = |height: u16| -> usize {
+            let mut app = app();
+            app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+            frame_sized(&mut app, 80, height)
+                .iter()
+                .filter(|line| line.contains(":  "))
+                .count()
+        };
+
+        assert!(
+            rows_shown(10) < rows_shown(24) && rows_shown(24) < rows_shown(40),
+            "the popup did not grow: {} rows at 10, {} at 24, {} at 40",
+            rows_shown(10),
+            rows_shown(24),
+            rows_shown(40)
+        );
+        assert_eq!(
+            rows_shown(40),
+            crate::navigation::HELP.len(),
+            "a terminal with room for every key should show every key"
+        );
+    }
+
+    /// The scrollbar is drawn only when something is off screen.
+    #[test]
+    fn the_help_popup_scrollbar_appears_only_when_it_must() {
+        let has_scrollbar = |height: u16| -> bool {
+            let mut app = app();
+            app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+            frame_sized(&mut app, 80, height)
+                .iter()
+                .any(|line| line.contains('▲'))
+        };
+
+        assert!(has_scrollbar(10), "a clipped popup needs its scrollbar");
+        assert!(!has_scrollbar(40), "a popup that fits drew one anyway");
+    }
+
+    /// End goes to the last line. It used to scroll to the viewport height
+    /// instead, which falls short of the end whenever the text is more than twice
+    /// as tall as the view.
+    #[test]
+    fn end_reaches_the_bottom_of_the_help() {
+        let mut app = app();
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        // Drawn once first, since a frame is where the popup learns its height.
+        frame_sized(&mut app, 80, 10);
+
+        app.handle_key(KeyEvent::from(KeyCode::End));
+        let text = frame_sized(&mut app, 80, 10).join("\n");
+        let last = crate::navigation::HELP.last().unwrap()[1];
+        assert!(
+            text.contains(last),
+            "End stopped short of {:?}:\n{}",
+            last,
+            text
+        );
     }
 
     #[test]

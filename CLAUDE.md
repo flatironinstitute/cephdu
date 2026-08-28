@@ -248,8 +248,13 @@ Other things worth knowing before editing:
   0.29/0.28), and the mechanism is an OSC 11 query, which needs raw-mode care, a timeout, and tmux passthrough.
   `terminal-colorsaurus` or `terminal-light` would be the crates if it is ever wanted -- but inheriting the
   terminal's colors makes detection unnecessary in the first place.
-- `POPUP_TEXT_HEIGHT` in [ui.rs](src/ui.rs) is a fixed constant that popup scroll clamping and scrollbar state
-  depend on; the popup is not sized to the terminal.
+- The popup is sized to the terminal by `popup_text_height` in [ui.rs](src/ui.rs) — as many rows of its text as
+  the frame has room for — so `Popup::view_height` is state the *renderer* writes, like `App::hscroll`, and
+  scroll clamping and the scrollbar both read it. Two consequences: `set_view_height` re-clamps the scroll,
+  since a resize can leave it past the new end; and it is zero until the first frame, so anything reading
+  `max_scroll` before one is drawn (a test that presses a key without rendering) sees the untruncated text. The
+  scrollbar is drawn only when `max_scroll() > 0`, which is why the block's `bottom_right` corner has to be a
+  connector — the scrollbar's `▼` used to cover it.
 - The gauge in `gauge()` draws the percentage text *inside* the bar with inverted colors on the overlapping
   region, using ⅛-block characters for sub-cell precision.
 - `format::Numbers` is the single switch between unit-scaled and exact rendering, and every size or count in
