@@ -142,6 +142,8 @@ mod tests {
             ctime: Some(992_606_400),
             user: Some("alice".to_string()),
             group: Some("scc".to_string()),
+            uid: None,
+            gid: None,
         }
     }
 

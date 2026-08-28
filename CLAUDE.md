@@ -143,17 +143,31 @@ Other things worth knowing before editing:
   `@` can occur, so marking names with it there would be indistinguishable from a real character;
   `display_name()` applies it and only the TUI and the human flat format call that. The rest of #12 is untouched:
   the size shown is the link's own (the length of the path it holds), a directory symlink sorts among the files,
-  and `Enter` on one does nothing, since `try_cd` canonicalizes and going back through a symlink would need that
-  reworked.
+  and `Enter` on one does nothing, since the listing worker canonicalizes and going back through a symlink
+  would need that reworked.
 - `Options` is what a read needs to know — sort mode, `dirs_first`, `owners` — and travels as one value rather
   than a run of booleans, which is what `DirListing::from` and `App::new` take.
 - `DirListing::options.owners` records what that listing *was read with*, not what the next read should do. The
   distinction matters: `toggle_owner` re-reads only when the listing never had owners, so hiding the column and
-  showing it again is free however many times, while `try_cd` builds the next read's options from
+  showing it again is free however many times, while `start_listing` builds a *new* directory's options from
   `App::needs()` so leaving with a column hidden doesn't make the next directory pay. Conflating the two made the
   third press of `u` re-read; there are tests with sentinel values for both fields. `App::needs()` is also where
   *ordering* by a field counts as needing it: sorting by owner or by time without reading them silently sorted
   by nothing, which is a bug worth not reintroducing.
+- Which is why acquiring a column for the listing on screen is not a re-read at all: `fetch_if_needed`
+  dispatches `start_columns`, which fetches only what is missing (`needs \ has`) and merges it in
+  (`DirListing::absorb`) — no readdir, nothing already read touched, so every column stays cached until the
+  directory is left or refreshed. It fetches per kind: a directory's time is one xattr and its owner one stat,
+  while a file's time and raw uid/gid were kept from the stat the listing already did (`DirEntry::{uid,gid}`),
+  so a file's owner is only the name lookup. The first version instead re-read the whole directory with options
+  built from what was currently shown — reading the time while the owner column was hidden dropped the owner, so
+  `u` then `t` then `u` paid for the owner twice, though repeating either key alone looked perfectly cached.
+  `absorb` re-sorts unconditionally, since the point of fetching a column is often to order by it.
+- `fetch_if_needed` defers while any read is in flight rather than superseding it: whatever lands re-checks on
+  arrival, so it converges instead of cancelling a `cd` to fetch columns for a directory about to be replaced.
+  The other half of that convergence is that an arriving listing conforms to the *screen's* sort and grouping,
+  not dispatch-time's: change the sort during a slow `cd` and the arrival re-sorts (by absent values if it must —
+  the arrival's `fetch_if_needed` then fetches them and `absorb` re-sorts with data).
 - `-l` implies `--flat` and conflicts with `--tui`: a flat listing is the one with no way to ask later, while
   the interface has `u` and `t`, which read on demand. That is why it selects a mode rather than being ignored
   in one.
