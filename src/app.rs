@@ -10,7 +10,7 @@ use std::{fs, os::unix::fs::MetadataExt};
 use ratatui::widgets::ListState;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::fs::{FSType, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name};
+use crate::fs::{FSType, get_entries, get_fs, get_rbytes, get_rctime, get_rentries, id_to_name};
 use crate::navigation;
 use crate::popup::Popup;
 
@@ -88,6 +88,9 @@ pub struct App {
 pub struct ListingWatch {
     cancel: AtomicBool,
     seen: AtomicUsize,
+    /// How many entries the read expects, from the directory's own entry count;
+    /// zero until known, and stays zero off Ceph.
+    total: AtomicUsize,
 }
 
 impl ListingWatch {
@@ -95,6 +98,7 @@ impl ListingWatch {
         ListingWatch {
             cancel: AtomicBool::new(false),
             seen: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
         }
     }
 
@@ -112,6 +116,14 @@ impl ListingWatch {
 
     fn seen(&self) -> usize {
         self.seen.load(AtomicOrdering::Relaxed)
+    }
+
+    fn set_total(&self, total: usize) {
+        self.total.store(total, AtomicOrdering::Relaxed);
+    }
+
+    fn total(&self) -> usize {
+        self.total.load(AtomicOrdering::Relaxed)
     }
 }
 
@@ -485,13 +497,19 @@ impl App {
     /// mention -- an ordinary directory change comes and goes without one.
     pub fn progress(&self) -> Option<Message> {
         let pending = self.pending.as_ref()?;
-        (pending.started.elapsed() >= PROGRESS_AFTER).then(|| Message {
-            text: format!(
-                "Reading {:?} ... {} entries (Ctrl-C to cancel)",
-                pending.path,
-                pending.watch.seen()
-            ),
-            kind: MessageKind::Info,
+        (pending.started.elapsed() >= PROGRESS_AFTER).then(|| {
+            // Not every filesystem prices a read upfront; count one-sided there.
+            let entries = match pending.watch.total() {
+                0 => format!("{}", pending.watch.seen()),
+                total => format!("{} / {}", pending.watch.seen(), total),
+            };
+            Message {
+                text: format!(
+                    "Reading {:?} ... {} entries (Ctrl-C to cancel)",
+                    pending.path, entries
+                ),
+                kind: MessageKind::Info,
+            }
         })
     }
 
@@ -936,6 +954,11 @@ fn ls(
         ..*options
     };
     let entry_cwd = DirEntry::from(PathBuf::from(path), EntryKind::Dir, None, &totals);
+    // The directory's own entry count prices the whole read upfront, for the
+    // progress notice. One more constant xattr read per listing, not per entry.
+    if let Some(total) = get_entries(path) {
+        watch.set_total(total);
+    }
     let dir_iterator = fs::read_dir(path)?;
     let mut entries: Vec<DirEntry> = Vec::new();
 
@@ -1616,6 +1639,37 @@ mod tests {
 
         app.pump(&mut listings);
         assert!(app.progress().is_none(), "the notice outlived the read");
+    }
+
+    /// The notice counts one-sided until the directory's own entry count is in
+    /// hand -- off Ceph it never is -- and prices the read against it after. On a
+    /// synthetic watch, so no worker races the assertions.
+    #[test]
+    fn progress_prices_the_read_once_the_total_is_known() {
+        let (mut app, _listings) = App::new(Options::default());
+        let watch = Arc::new(ListingWatch::new());
+        watch.saw_one();
+        watch.saw_one();
+        app.pending = Some(Pending {
+            generation: 0,
+            path: PathBuf::from("/big"),
+            watch: watch.clone(),
+            started: Instant::now() - 2 * PROGRESS_AFTER,
+            on_error: OnError::Message,
+            preserve_message: false,
+        });
+
+        let text = app.progress().unwrap().text;
+        assert!(text.contains("2 entries"), "{}", text);
+        assert!(
+            !text.contains(" / "),
+            "a total appeared from nowhere: {}",
+            text
+        );
+
+        watch.set_total(10_000);
+        let text = app.progress().unwrap().text;
+        assert!(text.contains("2 / 10000 entries"), "{}", text);
     }
 
     #[test]

@@ -9,11 +9,13 @@ const ATTR_BUF_SIZE: usize = 64;
 const DIR_RBYTES_ATTR: &str = "ceph.dir.rbytes";
 const DIR_RCTIME_ATTR: &str = "ceph.dir.rctime";
 const DIR_RENTRIES_ATTR: &str = "ceph.dir.rentries";
+const DIR_ENTRIES_ATTR: &str = "ceph.dir.entries";
 
 lazy_static! {
     static ref DIR_RBYTES_ATTR_C: CString = CString::new(DIR_RBYTES_ATTR).unwrap();
     static ref DIR_RCTIME_ATTR_C: CString = CString::new(DIR_RCTIME_ATTR).unwrap();
     static ref DIR_RENTRIES_ATTR_C: CString = CString::new(DIR_RENTRIES_ATTR).unwrap();
+    static ref DIR_ENTRIES_ATTR_C: CString = CString::new(DIR_ENTRIES_ATTR).unwrap();
 }
 
 lazy_static! {
@@ -124,6 +126,13 @@ fn get_xattr(path: &Path, attr: &CString) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&buf[..(bytes_read as usize)]).to_string())
+}
+
+/// The non-recursive entry count -- how many dents a readdir of `path` will
+/// return. Unlike `rentries` there is no self-count to subtract.
+pub fn get_entries(path: &Path) -> Option<usize> {
+    let entries = get_xattr(path, &DIR_ENTRIES_ATTR_C)?;
+    entries.trim().parse::<usize>().ok()
 }
 
 pub fn get_rentries(path: &Path) -> Option<usize> {

@@ -157,7 +157,8 @@ The whole listing moves, gauges included; the border and its labels stay put.
 Reading a directory costs a round trip to the metadata server per entry, so a
 huge one can take minutes. The interface doesn't block on it: the directory
 already on screen stays usable while the read runs, a notice counts the entries
-read so far, and `Esc` or `Ctrl-C` stops the read and stays put. Navigating
+read so far — against the directory's total, which on Ceph is known upfront — and
+`Esc` or `Ctrl-C` stops the read and stays put. Navigating
 somewhere else simply abandons the read in favor of the new one, quitting never
 waits, and the interface appears immediately at startup even when the first
 directory is slow. A read that finishes promptly shows none of this.
