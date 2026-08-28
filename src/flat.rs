@@ -165,6 +165,7 @@ mod tests {
                 // with both.
                 owners: true,
                 times: true,
+                jobs: 1,
             },
         )
     }
@@ -213,6 +214,7 @@ mod tests {
                 // with both.
                 owners: true,
                 times: true,
+                jobs: 1,
             },
         );
         assert_eq!(
@@ -288,6 +290,7 @@ mod tests {
                 // with both.
                 owners: true,
                 times: true,
+                jobs: 1,
             },
         );
 

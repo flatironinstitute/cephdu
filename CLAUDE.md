@@ -65,6 +65,14 @@ runtime, unit tests included. The moving parts and their traps:
   total, priced upfront from `ceph.dir.entries` — one more constant xattr read per listing, deliberately not
   taken from a full readdir pass first: stats lean on readdir's prefetch staying cached, and on a huge
   directory a drain-then-stat ordering would let it expire.
+- The hidden `-j` flag (`Options::jobs`) fans the per-entry syscalls out over scoped worker threads,
+  `read_batched`. It is deliberately undocumented — it changes speed, never output, and may change or vanish —
+  so keep it out of the README and the help text; tests pin both the hiding and the output equality. The feed
+  channel is bounded for the same prefetch reason as above, but streams rather than batching, because the
+  readdir is itself a substantial serial cost (readdirplus, ~750µs/entry on Ceph) and overlapping it with the
+  workers is most of the win beyond ~4 jobs. `jobs == 1` must keep taking the sequential loop, whose exact
+  syscall pattern the slope test pins — under `-j` only the statx/lgetxattr slopes are pinned, since thread
+  plumbing scales with the work.
 - A worker's answer is applied only if its generation matches the one `pending` — superseding (a `cd` during a
   `cd`) and cancelling both orphan the old answer, which may still arrive and must be dropped, not applied.
   Anything that changes what a listing shows goes through `start_listing`/`on_listing_msg`; there is no

@@ -572,3 +572,47 @@ fn tui_conflicts_with_flat_flags() {
         assert!(!out.success, "--tui {} was accepted", flag);
     }
 }
+
+/// Concurrent reads are a speed choice, never an output one: whatever the jobs
+/// count, byte-identical listings, in both formats and with the extras read.
+#[test]
+fn concurrency_does_not_change_the_output() {
+    let dir = tree("jobs");
+    let path = path_arg(&dir);
+
+    for args in [
+        vec!["-p", &path],
+        vec!["-p", "-l", &path],
+        vec!["-f", "-n", &path],
+    ] {
+        let sequential = run(&args);
+        let concurrent = run(&[&args[..], &["-j", "5"]].concat());
+        assert!(concurrent.success, "{}", concurrent.stderr);
+        assert_eq!(
+            sequential.stdout, concurrent.stdout,
+            "-j changed the output of {:?}",
+            args
+        );
+    }
+}
+
+/// -j is deliberately undocumented: it may change or vanish, so neither help
+/// text may mention it. (The README is on the honor system.)
+#[test]
+fn the_jobs_flag_is_hidden_from_help() {
+    for flag in ["-h", "--help"] {
+        let out = run(&[flag]);
+        assert!(out.success);
+        assert!(
+            !out.stdout.contains("-j") && !out.stdout.contains("jobs"),
+            "{} mentions -j:\n{}",
+            flag,
+            out.stdout
+        );
+    }
+
+    // Hidden, not gone.
+    let dir = tree("jobs_hidden");
+    let out = run(&["-p", "-j", "2", &path_arg(&dir)]);
+    assert!(out.success, "{}", out.stderr);
+}

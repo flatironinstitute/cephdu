@@ -32,6 +32,11 @@ pub struct Options {
     /// on ten thousand directories. A file's time comes from the stat it needs
     /// anyway, so this only concerns directories.
     pub times: bool,
+    /// How many entries' metadata to read at once. On Ceph every read is a
+    /// round trip to the metadata server, so a large listing is latency-bound
+    /// and reads in flight together buy nearly linear speedup. 1 means read
+    /// one at a time, exactly as a listing always has.
+    pub jobs: usize,
 }
 
 impl Options {
@@ -52,6 +57,7 @@ impl Default for Options {
             dirs_first: false,
             owners: false,
             times: false,
+            jobs: 1,
         }
     }
 }
@@ -959,45 +965,139 @@ fn ls(
     if let Some(total) = get_entries(path) {
         watch.set_total(total);
     }
-    let dir_iterator = fs::read_dir(path)?;
+    let mut dents = fs::read_dir(path)?;
     let mut entries: Vec<DirEntry> = Vec::new();
 
-    for entry_result in dir_iterator {
-        // An atomic load, so unlike a syscall it costs a large directory nothing.
-        if watch.cancelled() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "cancelled",
-            ));
+    if options.jobs <= 1 {
+        for entry_result in dents {
+            // An atomic load, so unlike a syscall it costs a large directory nothing.
+            if watch.cancelled() {
+                return Err(interrupted());
+            }
+
+            entries.push(read_entry(&entry_result?, options)?);
+            watch.saw_one();
         }
-
-        let entry = entry_result?;
-        let path = entry.path();
-
-        // readdir already reported the type, so file_type() only falls back to a
-        // stat of its own where the filesystem returned DT_UNKNOWN.
-        let file_type = entry.file_type()?;
-        let kind = if file_type.is_dir() {
-            EntryKind::Dir
-        } else if file_type.is_symlink() {
-            EntryKind::Symlink
-        } else {
-            EntryKind::File
-        };
-
-        // A file's size and time are the stat's alone; a directory needs one only to
-        // say who owns it.
-        let stat = if kind == EntryKind::Dir && !options.owners {
-            None
-        } else {
-            Some(entry.metadata()?)
-        };
-
-        entries.push(DirEntry::from(path, kind, stat, options));
-        watch.saw_one();
+    } else {
+        read_streamed(&mut dents, options, watch, &mut entries)?;
     }
 
     Ok((entry_cwd, entries))
+}
+
+fn interrupted() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Interrupted, "cancelled")
+}
+
+/// The per-entry syscalls for one dent.
+fn read_entry(entry: &fs::DirEntry, options: &Options) -> Result<DirEntry, std::io::Error> {
+    let path = entry.path();
+
+    // readdir already reported the type, so file_type() only falls back to a
+    // stat of its own where the filesystem returned DT_UNKNOWN.
+    let file_type = entry.file_type()?;
+    let kind = if file_type.is_dir() {
+        EntryKind::Dir
+    } else if file_type.is_symlink() {
+        EntryKind::Symlink
+    } else {
+        EntryKind::File
+    };
+
+    // A file's size and time are the stat's alone; a directory needs one only to
+    // say who owns it.
+    let stat = if kind == EntryKind::Dir && !options.owners {
+        None
+    } else {
+        Some(entry.metadata()?)
+    };
+
+    Ok(DirEntry::from(path, kind, stat, options))
+}
+
+/// `ls`'s loop with the per-entry syscalls fanned out over `options.jobs`
+/// threads, fed from the readdir through a *bounded* channel. The bound is the
+/// point: it keeps the readdir just ahead of the reads it prefetches for --
+/// draining it first would let the prefetch expire on a directory large enough
+/// for any of this to matter -- while still overlapping it with the workers,
+/// which is worth having because on Ceph the readdir itself is a substantial
+/// serial cost (readdirplus instantiates every child inode: measured 7.5s of a
+/// 33s listing of ten thousand directories).
+fn read_streamed(
+    dents: &mut fs::ReadDir,
+    options: &Options,
+    watch: &ListingWatch,
+    entries: &mut Vec<DirEntry>,
+) -> Result<(), std::io::Error> {
+    let (feed, next) = std::sync::mpsc::sync_channel::<fs::DirEntry>(options.jobs * 4);
+    let next = std::sync::Mutex::new(next);
+    let read = std::sync::Mutex::new((Vec::new(), None::<std::io::Error>));
+
+    std::thread::scope(|s| {
+        for _ in 0..options.jobs {
+            s.spawn(|| {
+                let mut mine: Vec<DirEntry> = Vec::new();
+                loop {
+                    // Even once cancelled or failed, keep receiving: the feeder
+                    // blocks when the channel is full, so every worker must
+                    // drain it to closure or the feeder could never finish.
+                    let Ok(entry) = next.lock().unwrap().recv() else {
+                        break;
+                    };
+                    if watch.cancelled() {
+                        continue;
+                    }
+                    match read_entry(&entry, options) {
+                        Ok(entry) => {
+                            mine.push(entry);
+                            watch.saw_one();
+                        }
+                        Err(e) => {
+                            // First error wins; cancelling stops the rest.
+                            let failed = &mut read.lock().unwrap().1;
+                            if failed.is_none() {
+                                *failed = Some(e);
+                            }
+                            watch.cancel();
+                        }
+                    }
+                }
+                read.lock().unwrap().0.append(&mut mine);
+            });
+        }
+
+        // This thread feeds; `feed` drops at scope end, which is what tells the
+        // workers the listing is over.
+        for entry_result in dents.by_ref() {
+            if watch.cancelled() {
+                break;
+            }
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(e) => {
+                    let failed = &mut read.lock().unwrap().1;
+                    if failed.is_none() {
+                        *failed = Some(e);
+                    }
+                    break;
+                }
+            };
+            if feed.send(entry).is_err() {
+                break;
+            }
+        }
+        drop(feed);
+    });
+
+    let (mut done, failed) = read.into_inner().unwrap();
+    if let Some(e) = failed {
+        return Err(e);
+    }
+    if watch.cancelled() {
+        return Err(interrupted());
+    }
+    entries.append(&mut done);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1670,6 +1770,35 @@ mod tests {
         watch.set_total(10_000);
         let text = app.progress().unwrap().text;
         assert!(text.contains("2 / 10000 entries"), "{}", text);
+    }
+
+    /// Concurrency is a speed choice, never a content one. Compared under a name
+    /// sort because a size order isn't stable between two reads on Ceph, where
+    /// recursive sizes settle asynchronously; file sizes are stat's and stable.
+    #[test]
+    fn concurrent_reads_list_the_same_entries() {
+        let options = Options::sorted(SortMode::Normal(SortField::Name));
+        let sequential = DirListing::from(Path::new("."), options).unwrap();
+        let concurrent = DirListing::from(Path::new("."), Options { jobs: 5, ..options }).unwrap();
+
+        let names = |l: &DirListing| l.iter_entries().map(|e| e.name.clone()).collect::<Vec<_>>();
+        assert!(sequential.len() > 1, "nothing listed to compare");
+        assert_eq!(names(&sequential), names(&concurrent));
+
+        let file_sizes = |l: &DirListing| {
+            l.iter_entries()
+                .filter(|e| e.kind == EntryKind::File)
+                .map(|e| (e.name.clone(), e.size))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(file_sizes(&sequential), file_sizes(&concurrent));
+
+        // Errors surface just as they do one at a time.
+        let missing = DirListing::from(
+            Path::new("does_not_exist_xyz"),
+            Options { jobs: 5, ..options },
+        );
+        assert!(missing.is_err());
     }
 
     #[test]
