@@ -32,6 +32,12 @@ The interactive interface (terminal user interface, or TUI) is used when stdout 
 terminal. Otherwise, --parseable is enabled by default, so that the output can be processed
 through pipes and redirects.
 
+Without a PATH, cephdu starts in the current directory if it is on Ceph. Otherwise it
+starts in $CEPHDU_DEFAULT_DIR if that is set, or in a default baked into the binary when
+it was built; a literal $USER in either is replaced with the current username. Setting
+the variable to the empty string disables the baked-in default too. With no default
+configured, the current directory is used regardless.
+
 Parseable listings have one row per entry: size, file count, change time, user,
 group, name. In flat mode, columns the filesystem does not provide or were not requested
 are skipped. In parseable mode, they are rendered as -. --flat writes with units for reading;
@@ -301,30 +307,34 @@ async fn run_app<B: Backend>(
 }
 
 /// Returns the cwd if it is a ceph dir.
-/// If not, returns DEFAULT_DIR if set.
-/// If not, the cwd is returned.
-/// Instances of $USER in DEFAULT_DIR are replaced with the current username.
+/// If not, returns the CEPHDU_DEFAULT_DIR environment variable, or DEFAULT_DIR
+/// if the variable is unset.
+/// If neither is set, the cwd is returned.
+/// Instances of $USER in either are replaced with the current username.
 fn default_dir() -> PathBuf {
     let cwd = PathBuf::from(".");
-    if DEFAULT_DIR.is_none() {
-        // short-circuit testing if cwd is ceph
+    // The variable wins over the baked-in value because it is set closer to the
+    // machine: a site's modulefile against whoever built the binary. Set-but-empty
+    // disables the baked-in value too, so a site can also switch the default off.
+    let configured = match std::env::var("CEPHDU_DEFAULT_DIR") {
+        Ok(dir) => (!dir.is_empty()).then_some(dir),
+        Err(_) => DEFAULT_DIR.map(str::to_string),
+    };
+    let Some(dir) = configured else {
+        // Nothing to fall back to, so skip the statfs.
         return cwd;
-    }
+    };
 
     if fs::get_fs(&cwd).map(fs::FSType::is_ceph).unwrap_or(false) {
         return cwd;
     }
 
-    DEFAULT_DIR
-        .and_then(|dir| {
-            if dir.contains("$USER") {
-                match std::env::var("USER") {
-                    Ok(username) => Some(PathBuf::from(dir.replace("$USER", &username))),
-                    Err(_) => None,
-                }
-            } else {
-                Some(PathBuf::from(dir))
-            }
-        })
-        .unwrap_or(PathBuf::from("."))
+    if dir.contains("$USER") {
+        match std::env::var("USER") {
+            Ok(username) => PathBuf::from(dir.replace("$USER", &username)),
+            Err(_) => cwd,
+        }
+    } else {
+        PathBuf::from(dir)
+    }
 }

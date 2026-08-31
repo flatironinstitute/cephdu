@@ -31,10 +31,22 @@ impl Output {
 }
 
 fn run(args: &[&str]) -> Output {
-    let out = Command::new(BIN)
-        .args(args)
-        .output()
-        .expect("failed to run cephdu");
+    run_from(None, &[], args)
+}
+
+/// Like `run`, from a given working directory and with environment overrides.
+/// Every invocation scrubs CEPHDU_DEFAULT_DIR first, so a shell that happens to
+/// set it can't leak a default directory into tests that assume none.
+fn run_from(cwd: Option<&Path>, env: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = Command::new(BIN);
+    cmd.env_remove("CEPHDU_DEFAULT_DIR").args(args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let out = cmd.output().expect("failed to run cephdu");
 
     Output {
         stdout: String::from_utf8(out.stdout).expect("stdout is not UTF-8"),
@@ -629,4 +641,69 @@ fn the_jobs_flag_is_hidden_from_help() {
     let dir = tree("jobs_hidden");
     let out = run(&["-p", "-j", "2", &path_arg(&dir)]);
     assert!(out.success, "{}", out.stderr);
+}
+
+/// An empty directory to run from, for the default-directory tests. Returns None
+/// (skip) when it lands on Ceph, where the cwd rightly wins over any default.
+fn non_ceph_cwd(tag: &str) -> Option<PathBuf> {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(tag);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+
+    let probe = run_from(Some(&dir), &[], &["-p", "."]);
+    if probe.on_ceph() {
+        eprintln!("SKIP: {} is on Ceph, so the cwd wins over any default", tag);
+        return None;
+    }
+    Some(dir)
+}
+
+/// CEPHDU_DEFAULT_DIR names the starting directory when no PATH is given and the
+/// cwd is not on Ceph. An explicit PATH still wins, and an empty value means no
+/// default at all rather than falling back to one baked in at build time.
+#[test]
+fn the_default_dir_env_var_names_the_starting_directory() {
+    let target = tree("default_dir_target");
+    let Some(cwd) = non_ceph_cwd("default_dir_cwd") else {
+        return;
+    };
+    let env = [("CEPHDU_DEFAULT_DIR", target.to_str().unwrap())];
+
+    let out = run_from(Some(&cwd), &env, &["-p"]);
+    assert!(out.success, "{}", out.stderr);
+    assert!(out.stdout.contains("big.bin"), "{}", out.stdout);
+
+    let explicit = run_from(Some(&cwd), &env, &["-p", "."]);
+    assert!(explicit.success, "{}", explicit.stderr);
+    assert_eq!(explicit.stdout, "", "a PATH argument lost to the default");
+
+    let disabled = run_from(Some(&cwd), &[("CEPHDU_DEFAULT_DIR", "")], &["-p"]);
+    assert!(disabled.success, "{}", disabled.stderr);
+    assert_eq!(
+        disabled.stdout, "",
+        "an empty default was not treated as none"
+    );
+}
+
+/// A literal $USER in the variable expands to the current username, the same
+/// substitution the baked-in default gets.
+#[test]
+fn the_default_dir_env_var_expands_user() {
+    let Ok(username) = std::env::var("USER") else {
+        eprintln!("SKIP: USER is not set");
+        return;
+    };
+    let Some(cwd) = non_ceph_cwd("default_dir_user_cwd") else {
+        return;
+    };
+
+    let base = Path::new(env!("CARGO_TARGET_TMPDIR")).join("default_dir_user");
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(base.join(&username)).unwrap();
+    fs::write(base.join(&username).join("marker.bin"), vec![0u8; 9]).unwrap();
+
+    let value = format!("{}/$USER", base.to_str().unwrap());
+    let out = run_from(Some(&cwd), &[("CEPHDU_DEFAULT_DIR", &value)], &["-p"]);
+    assert!(out.success, "{}", out.stderr);
+    assert!(out.stdout.contains("marker.bin"), "{}", out.stdout);
 }
