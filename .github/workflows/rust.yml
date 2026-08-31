@@ -5,13 +5,31 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  release:
+    types: [published]
+
+# A superseded run has nothing left to say, but a release run must finish: its
+# assets are the release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
 
 env:
   CARGO_TERM_COLOR: always
+  # Also the toolchain cache's key, so bumping this is what moves CI's compiler.
+  RUST_VERSION: '1.92.0'
+  # Debug except when the binary is going to be shipped: overflow checks and
+  # debug assertions are worth more while testing than matching the profile
+  # that ships, and the difference in build time is about a second.
+  PROFILE: ${{ github.event_name == 'release' && '--release' || '' }}
 
 jobs:
+  # Lint runs once and on the runner: fmt and clippy don't depend on the image,
+  # and pre-commit wants a Python the build image doesn't carry.
   check:
+    if: github.event_name != 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-python@v4
@@ -22,19 +40,90 @@ jobs:
       if: always()
 
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # One lane per commit, every platform on a release. The other three
+        # exist for the assets, and each costs its own container pull and
+        # toolchain, so paying for them per commit buys little.
+        include: >-
+          ${{ github.event_name == 'release'
+          && fromJSON('[{"platform":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"},{"platform":"x86_64-unknown-linux-musl","os":"ubuntu-latest"},{"platform":"aarch64-unknown-linux-gnu","os":"ubuntu-24.04-arm"},{"platform":"aarch64-unknown-linux-musl","os":"ubuntu-24.04-arm"}]')
+          || fromJSON('[{"platform":"x86_64-unknown-linux-gnu","os":"ubuntu-latest"}]') }}
+    runs-on: ${{ matrix.os }}
+    # Commits and releases build in the same image, so what the tests ran
+    # against is what a release ships. rocky8 because its glibc 2.28 is below
+    # the clusters' 2.34 -- built on the runner instead, a gnu binary needs the
+    # runner's own glibc and cannot start there -- and because 2.28 is also the
+    # floor for the Node that runs JavaScript actions like checkout.
+    container: rockylinux:8
+    permissions:
+      contents: write # for the release upload
+    timeout-minutes: 30
     steps:
+    # git before checkout, or it falls back to a tarball download and no .git.
+    - name: Install build tools
+      run: dnf install -y gcc git
+
+    # Makes tests/syscalls.rs run rather than skip. Its counts are glibc's:
+    # musl reaches stat through newfstatat, not statx, so those lanes skip.
+    - name: Install strace
+      if: endsWith(matrix.platform, '-gnu')
+      run: dnf install -y strace
+
     - uses: actions/checkout@v4
+
+    # The runner's own toolchain isn't in scope inside the container, so it is
+    # installed here -- and cached, since that download is a large part of what
+    # a short lane spends its time on.
+    - name: Cache the Rust toolchain
+      id: toolchain
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin
+          ~/.rustup
+        key: rust-${{ env.RUST_VERSION }}-${{ matrix.platform }}
+
+    - name: Install Rust
+      if: steps.toolchain.outputs.cache-hit != 'true'
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+          --profile minimal --default-toolchain "$RUST_VERSION" \
+          --target ${{ matrix.platform }}
+
+    - name: Put cargo on PATH
+      run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
     - uses: actions/cache@v4
       with:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: cargo-${{ matrix.platform }}-${{ hashFiles('**/Cargo.lock') }}
+        # A lockfile bump should still start from the last build's artifacts.
+        restore-keys: cargo-${{ matrix.platform }}-
+
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --target ${{ matrix.platform }} $PROFILE
+
     # The tests in tests/ceph.rs skip themselves when there is no CephFS mount,
     # which is always the case here.
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --verbose --target ${{ matrix.platform }} $PROFILE
+
+    # Last, so a failing test holds back the asset.
+    - name: Upload as release asset
+      if: github.event_name == 'release'
+      run: |
+        cd target/${{ matrix.platform }}/release
+        name="cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}"
+        mv cephdu "$name"
+        curl -sSf -X POST \
+          -H "Authorization: Bearer $GH_TOKEN" \
+          -H "Content-Type: application/octet-stream" \
+          --data-binary "@$name" \
+          "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ github.event.release.id }}/assets?name=$name"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

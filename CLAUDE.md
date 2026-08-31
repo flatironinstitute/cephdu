@@ -23,8 +23,20 @@ fallback directory (read via `option_env!` in [main.rs](src/main.rs)); the same-
 overrides it at runtime (set closer to the machine — it's how a site modulefile picks the right mount per
 cluster, issue #19), and set-but-empty disables both. The literal `$USER` is substituted at runtime in either.
 A default only applies when no path is given and the cwd is not itself on Ceph (`default_dir`); the flat_cli
-tests scrub the variable so a shell that sets it can't perturb them. Release binaries are built for gnu/musl × x86_64/aarch64 by
-[.github/workflows/release.yml](.github/workflows/release.yml) on GitHub Release publish.
+tests scrub the variable so a shell that sets it can't perturb them.
+
+CI and releases are one workflow, [.github/workflows/rust.yml](.github/workflows/rust.yml), differing only
+in what the event selects: a commit builds and tests one x86_64-gnu lane in the debug profile, while a
+GitHub Release publish fans out to gnu/musl × x86_64/aarch64, builds `--release`, and uploads each asset
+from the lane that just tested it. Both run in a `rockylinux:8` container, which is the point — a gnu
+binary built on the runner needs the runner's own glibc (2.39) and cannot start on the rocky9 clusters
+(2.34), while rocky8's 2.28 floor runs on both, and 2.28 is also the floor for the Node that runs
+`actions/checkout`. Debug for commits is for the overflow checks and debug assertions, not for speed: a
+from-scratch test build is 6.3s against 7.2s, so the profile is nothing next to the per-lane bootstrap
+(container pull, `dnf`, toolchain), which is why the toolchain is cached under `RUST_VERSION` — bumping
+that pin is what moves CI's compiler. `strace` is installed only in the gnu lanes:
+[tests/syscalls.rs](tests/syscalls.rs) counts `statx`, glibc's route to `stat`, so under musl those tests
+would fail rather than skip.
 
 Rust edition 2024; the code uses let-chains, so a recent toolchain is required.
 
