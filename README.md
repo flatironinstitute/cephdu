@@ -34,6 +34,13 @@ CEPHDU_DEFAULT_DIR=/mnt/ceph/users/\$USER cargo build --release
 ```
 The literal string `$USER` is substituted at runtime.
 
+At runtime, the `CEPHDU_DEFAULT_DIR` environment variable overrides the baked-in
+value, with the same `$USER` substitution — so a site can set the default per
+cluster, in a modulefile for example, instead of per build. Setting it to the
+empty string disables the baked-in default too. Either default applies only when
+no path is given and the current directory is not on Ceph; a Ceph current
+directory always wins.
+
 To build a static executable:
 ```console
 cargo build --release cargo build --target=x86_64-unknown-linux-musl
@@ -42,7 +49,10 @@ cargo build --release cargo build --target=x86_64-unknown-linux-musl
 ## Usage
 Simply run `cephdu` from the command line and an interactive terminal user interface (TUI) will be displayed. Navigate using the arrow keys and Enter. For a full list of keyboard shortcuts, press `?`.
 
-The CLI accepts one optional argument, the initial directory:
+The CLI accepts one optional argument, the initial directory. Without it, cephdu
+starts in the current directory if that is on Ceph, and otherwise in
+`$CEPHDU_DEFAULT_DIR` if it is set (see [Installation](#installation) for the
+resolution order):
 ```console
 ❯ cephdu -h
 Display ceph space and file count (inode) usage in an interactive terminal

@@ -18,9 +18,12 @@ cargo test -- --nocapture        # SKIP notices from tests/ceph.rs, syscall tabl
 CEPHDU_TEST_DIR=<ceph path> cargo test --test ceph
 ```
 
-Compile-time configuration: `CEPHDU_DEFAULT_DIR=/mnt/ceph/users/\$USER cargo build --release` bakes in a
-fallback directory (read via `option_env!` in [main.rs](src/main.rs)); the literal `$USER` is substituted at
-runtime. Release binaries are built for gnu/musl × x86_64/aarch64 by
+Default-directory configuration: `CEPHDU_DEFAULT_DIR=/mnt/ceph/users/\$USER cargo build --release` bakes in a
+fallback directory (read via `option_env!` in [main.rs](src/main.rs)); the same-named environment variable
+overrides it at runtime (set closer to the machine — it's how a site modulefile picks the right mount per
+cluster, issue #19), and set-but-empty disables both. The literal `$USER` is substituted at runtime in either.
+A default only applies when no path is given and the cwd is not itself on Ceph (`default_dir`); the flat_cli
+tests scrub the variable so a shell that sets it can't perturb them. Release binaries are built for gnu/musl × x86_64/aarch64 by
 [.github/workflows/release.yml](.github/workflows/release.yml) on GitHub Release publish.
 
 Rust edition 2024; the code uses let-chains, so a recent toolchain is required.
