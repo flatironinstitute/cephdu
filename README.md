@@ -37,7 +37,7 @@ The literal string `$USER` is substituted at runtime.
 At runtime, the `CEPHDU_DEFAULT_DIR` environment variable overrides the baked-in
 value, with the same `$USER` substitution — so a site can set the default per
 cluster, in a modulefile for example, instead of per build. Setting it to the
-empty string disables the baked-in default too. Either default applies only when
+empty string disables the baked-in default, too. Either default applies only when
 no path is given and the current directory is not on Ceph; a Ceph current
 directory always wins.
 
@@ -47,7 +47,7 @@ cargo build --release cargo build --target=x86_64-unknown-linux-musl
 ```
 
 ## Usage
-Simply run `cephdu` from the command line and an interactive terminal user interface (TUI) will be displayed. Navigate using the arrow keys and Enter. For a full list of keyboard shortcuts, press `?`.
+Simply run `cephdu` from the command line and an interactive terminal user interface (TUI) will be displayed. Navigate using the arrow keys and Enter. For a full list of keyboard shortcuts, press `?`. For [`flat mode`](#flat-text-mode), use `cephdu -f`.
 
 The CLI accepts one optional argument, the initial directory. Without it, cephdu
 starts in the current directory if that is on Ceph, and otherwise in
@@ -79,8 +79,37 @@ Options:
   -h, --help        Print help
 ```
 
+## Flat text mode
+`cephdu -f/--flat` prints the listing as text instead of drawing the interactive
+interface, with the same units the interface uses:
+```console
+❯ cephdu --flat /mnt/ceph/users/$USER | head -3
+88.8 TB   95.6 K             -  Derivatives/
+23.3 TB  232.8 K             -  AbacusSummit/
+ 1.0 GB        -  Mar 23 16:13  file.bin
+```
+
+Note that directory rctime is not displayed by default to avoid potentially expensive syscalls. Use `-l` to display.
+
+`--parseable` prints the same listing as raw values instead, one row of six
+tab-separated fields per entry — size in bytes, recursive entry count,
+change time in Unix seconds, user, group, and name — with `-` for anything
+the filesystem doesn't provide (recursive values are only available on Ceph).
+Directory names keep their trailing `/`, and `..` is not listed. Symlinks are *not*
+marked here: a filename may contain `@`, so a parser could not tell a mark from a
+character. Only the two human formats mark them.
+
+```console
+❯ cephdu --parseable /mnt/ceph/users/$USER | head -3
+88830194877352  95636   -       -       -       Derivatives/
+23303634816992  232846  -       -       -       AbacusSummit/
+1048576000      -       1774296835      -       -       test1.bin
+```
+
+Parseable is the default when stdout is not a TTY.
+
 ### Sorting
-Listings are sorted largest first unless one of `-n`, `-s`, `-c`, `-u` or `-t` is
+Listings are sorted by bytes (`rbytes` for directories) unless one of `-n`, `-s`, `-c`, `-u` or `-t` is
 given, which choose the field to sort on. They apply to both the interactive
 interface and flat listings, and each field starts in the direction its sort key
 uses in the interface: sizes, counts and change times read most-first, names and
@@ -97,67 +126,26 @@ within each group by the usual rules. In the interactive interface, `d` toggles 
 when the rounding matters; `e` toggles it in the interface. The parseable format is
 always exact, so `-e` has no effect there.
 
-The bottom border of the interface names the sort in effect, as in `size ↓` for
-largest first or `name ↑` for A to Z, and appends `· dirs first` while directories
-are being grouped.
-
 ### Colors
-The interface names as few colors as it can, inheriting the terminal's own, so it
-suits a light terminal as well as a dark one without being told which it is. The
-colors it does name are the row the cursor is on, and red and yellow for errors and
-warnings. The bars keep the terminal's own color on every row, cursor included, so
-the column reads as one chart. Flat listings are never colored.
-
-`NO_COLOR` is honored. Since it suppresses colors but not attributes, a colored
-band would simply disappear, so the cursor row falls back to bold when it is set.
+The interface mostly uses terminal colors, so it should adapt to dark and light themes. The program respects `NO_COLOR`. Flat mode never uses colors.
 
 ### Symlinks
 Symlinks are marked the way `ls -F` marks them, with a trailing `@` beside the `/`
 that directories already carry. The size shown is the symlink's own — the length of
 the path it holds — rather than its target's, and a symlink to a directory is listed
-among the files. Following one is not implemented yet.
+among the files.
 
-### What costs extra, and `-l`
-Two things are not read unless something asks for them, because each one costs extra
-syscalls — and on Ceph each of those is a round trip to the metadata server:
 
-* **The owner.** It is the only thing a directory needs a `stat` for — size and
-  count are xattrs and the kind comes from `readdir`. Turning the uid into a name is
-  cheap by comparison, and happens once per distinct owner rather than once per
-  entry.
-* **A directory's recursive time.** It is one of the three xattr reads a directory
-  otherwise makes, and those reads dominate a large listing: on ten thousand
-  directories, `43s` with `-l` against `30s` without.
+### syscalls
+In a directory listing, we query the following info by default:
+- For each directory: `rbytes` and `rentries`. Two `getxattr` syscalls.
+- For each file: one `stat`, yielding the file size, ctime, etc.
 
-So without `-l` a directory costs two xattr reads and no `stat` at all, and a uid is
-never turned into a name.
-
-A file's size and change time come from the one `stat` it needs regardless, so they
-are always shown.
-
-`-l` implies `-f`, since a flat listing is the one with no way to ask later, and so
-it conflicts with `--tui`. Without it, `--flat` drops the owner column, while every
-other column stays and shows `-` for what is missing; `--parseable` always keeps all
-six fields.
-
-The interface asks instead: `u` and `t` fetch just the missing values for the listing
-already on screen — not a re-read of the directory — and keep them for as long as you
-stay there, so toggling the columns in any order costs nothing after the first fetch
-of each. Moving to another directory or refreshing reads afresh, and reads only what
-the visible columns and the current sort need — so ordering by owner or by change
-time fetches it whether or not the column is on screen.
-
-A directory's time is Ceph's `rctime`: the newest ctime anywhere beneath it, its own
-included, so changing only its permissions moves it. It is a propagated value that
-starts at zero — creating a directory does not give it one — so a directory nothing
-has happened in since it was made shows the epoch, the usual way a Unix timestamp
-says it was never set. `ls -l` shows a date there instead, because it shows the
-directory's *own* mtime, which creation does set. Creating something inside a
-directory does set the parent's, so only the leaves of a fresh tree read the epoch.
+If the user requests displaying or sorting by ctime or owner, then we issue an additional syscall (`getxattr` or `stat`) for each directory entry.
 
 ### Directory info
 Every number in the listing is recursive, so the non-recursive ones live in a
-panel that `i` toggles under the listing, labeled in words:
+panel that `i` toggles under the listing:
 
 ```
 ┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫
@@ -170,73 +158,12 @@ panel that `i` toggles under the listing, labeled in words:
 ┗ size ↓ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Press ? for help ┛
 ```
 
-"At this level" means the files directly in this directory, the way `du -S`
-counts — so that line answers whether the usage is here or somewhere below. The
-panel follows you as you navigate, and `-i` opens the interface with it shown. Its this-level numbers come from the listing
-already in hand; the recursive ones are read from the directory's own attributes
-when the panel opens or the directory changes, four reads in all, so it costs
-nothing per entry. Off Ceph the recursive lines are absent. The recursive lines
+`-i` opens the interface with the panel shown.
+
+"At this level" means the files directly in this directory. Off Ceph the recursive lines are absent. The recursive lines
 are a consistent snapshot, which can disagree slightly with the border's totals
 while Ceph is still propagating recent changes; each number is individually
 true.
-
-### Reading the border
-The top border shows the current path on the left and the directory's totals on
-the right. A path too long for the border loses its start, marked with `…`, so
-that the deepest components stay visible as you navigate.
-
-### Scrolling
-The listing scrolls sideways with the left and right arrow keys when the rows are
-wider than the terminal, which happens once the owner or time columns are shown.
-The whole listing moves, gauges included; the border and its labels stay put.
-
-### Slow directories
-Reading a directory costs a round trip to the metadata server per entry, so a
-huge one can take minutes. The interface doesn't block on it: the directory
-already on screen stays usable while the read runs, a notice counts the entries
-read so far — against the directory's total, which on Ceph is known upfront — and
-`Esc` or `Ctrl-C` stops the read and stays put. Navigating
-somewhere else simply abandons the read in favor of the new one, quitting never
-waits, and the interface appears immediately at startup even when the first
-directory is slow. A read that finishes promptly shows none of this.
-
-## Flat text mode
-`cephdu --flat` prints the listing as text instead of drawing the interactive
-interface, with the same units the interface uses:
-```console
-❯ cephdu --flat /mnt/ceph/users/$USER | head -3
- 1.1 TB   48.2 K  Dec 11 09:15  alice:scc  data/
- 2.1 GB        1  Dec 10 23:53  alice:scc  bigfile.h5
- 4.1 KB       12  Dec 10 23:36  alice:scc  scripts/
-```
-
-`--parseable` prints the same listing as raw values instead, one row of six
-tab-separated fields per entry — size in bytes, recursive entry count,
-change time in Unix seconds, user, group, and name — with `-` for anything
-the filesystem doesn't provide (recursive values are only available on Ceph).
-Directory names keep their trailing `/`, and `..` is not listed. Symlinks are *not*
-marked here: a filename may contain `@`, so a parser could not tell a mark from a
-character. Only the two human formats mark them.
-
-```console
-❯ cephdu --parseable /mnt/ceph/users/$USER | head -3
-1099511627776	48213	1765432100	alice	scc	data/
-2147483648	1	1765400000	alice	scc	bigfile.h5
-4096	12	1765399000	alice	scc	scripts/
-```
-
-The parseable format does not change based on whether stdout is a terminal, so it
-stays parsable regardless of how it is invoked:
-```console
-❯ cephdu -p | awk -F'\t' '$1 > 1e12 {print $6}'    # directories over 1 TB
-```
-
-Because the interactive interface draws to stdout, a flat listing is printed
-automatically when stdout is not a terminal, so `cephdu | ...` and `cephdu > file`
-do something useful. That implied listing is parseable, on the grounds that
-whatever is reading a pipe is more often a program than a person. Pass `--tui` to
-override the detection, which is occasionally needed under tools that run a
-program on a pseudo-terminal.
 
 ## Tests
 ```console
