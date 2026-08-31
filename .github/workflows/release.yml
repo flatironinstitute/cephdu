@@ -4,6 +4,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-attach:
     strategy:
@@ -12,29 +15,44 @@ jobs:
         include:
           - platform: x86_64-unknown-linux-gnu
             runs-on: ubuntu-latest
+            container: rockylinux:8
           - platform: x86_64-unknown-linux-musl
             runs-on: ubuntu-latest
           - platform: aarch64-unknown-linux-gnu
             runs-on: ubuntu-24.04-arm
+            container: rockylinux:8
           - platform: aarch64-unknown-linux-musl
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
+    container: ${{ matrix.container }}
     steps:
+      - name: Install a compiler and git (container only)
+        if: matrix.container
+        run: dnf install -y gcc git
+
       - uses: actions/checkout@v4
 
-      - name: Install targets
+      # Installed fresh rather than taken from the runner image, so the same
+      # steps work inside the containers.
+      - name: Install Rust
         run: |
-          rustup target add ${{ matrix.platform }}
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --target ${{ matrix.platform }}
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.platform }}
-      
+
       - name: Upload as release asset
         run: |
           cd target/${{ matrix.platform }}/release
           name="cephdu-${{ github.event.release.tag_name }}-${{ matrix.platform }}"
-          mv cephdu $name
-          gh release upload "${{ github.event.release.tag_name }}" $name
+          mv cephdu "$name"
+          curl -sSf -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@$name" \
+            "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ github.event.release.id }}/assets?name=$name"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
