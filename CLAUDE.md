@@ -22,8 +22,11 @@ Default-directory configuration: `CEPHDU_DEFAULT_DIR=/mnt/ceph/users/\$USER carg
 fallback directory (read via `option_env!` in [main.rs](src/main.rs)); the same-named environment variable
 overrides it at runtime (set closer to the machine — it's how a site modulefile picks the right mount per
 cluster, issue #19), and set-but-empty disables both. The literal `$USER` is substituted at runtime in either.
-A default only applies when no path is given and the cwd is not itself on Ceph (`default_dir`); the flat_cli
-tests scrub the variable so a shell that sets it can't perturb them.
+A default only applies to the TUI, and only when no path is given and the cwd is not itself on Ceph
+(`default_dir`) — a flat listing is more often a script's, and a script means the directory it ran from, which
+is why `main` resolves the path only after picking the mode. The resolution rules (precedence, set-but-empty,
+`$USER`) live in the pure `configured_dir` and are unit-tested there: the flat_cli tests can only reach them
+through flat mode, which no longer consults them, and they pin that instead.
 
 CI and releases are one workflow, [.github/workflows/rust.yml](.github/workflows/rust.yml), differing only
 in what the event selects: a commit builds and tests one x86_64-gnu lane in the debug profile, while a

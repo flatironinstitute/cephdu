@@ -32,11 +32,12 @@ The interactive interface (terminal user interface, or TUI) is used when stdout 
 terminal. Otherwise, --parseable is enabled by default, so that the output can be processed
 through pipes and redirects.
 
-Without a PATH, cephdu starts in the current directory if it is on Ceph. Otherwise it
-starts in $CEPHDU_DEFAULT_DIR if that is set, or in a default baked into the binary when
-it was built; a literal $USER in either is replaced with the current username. Setting
-the variable to the empty string disables the baked-in default too. With no default
-configured, the current directory is used regardless.
+Without a PATH, the interactive interface starts in the current directory if it is on
+Ceph. Otherwise it starts in $CEPHDU_DEFAULT_DIR if that is set, or in a default baked
+into the binary when it was built; a literal $USER in either is replaced with the current
+username. Setting the variable to the empty string disables the baked-in default too.
+With no default configured, the current directory is used regardless. Flat listings
+always use the current directory, whatever is configured.
 
 Parseable listings have one row per entry: size, file count, change time, user,
 group, name. In flat mode, columns the filesystem does not provide or were not requested
@@ -163,7 +164,6 @@ fn main() -> Result<()> {
 
     let path_was_explicit = args.path.is_some();
 
-    let path: PathBuf = args.path.clone().unwrap_or_else(default_dir);
     let sort_mode = if args.reverse {
         args.sort.mode().as_reversed()
     } else {
@@ -182,6 +182,13 @@ fn main() -> Result<()> {
     } else {
         None
     };
+
+    // The configured default is a convenience for the interface; a flat listing is
+    // more often a script's, and a script means the directory it ran from.
+    let path: PathBuf = args.path.clone().unwrap_or_else(|| match format {
+        Some(_) => PathBuf::from("."),
+        None => default_dir(),
+    });
 
     let options = Options {
         sort_mode,
@@ -306,21 +313,13 @@ async fn run_app<B: Backend>(
     Ok(())
 }
 
-/// Returns the cwd if it is a ceph dir.
-/// If not, returns the CEPHDU_DEFAULT_DIR environment variable, or DEFAULT_DIR
-/// if the variable is unset.
-/// If neither is set, the cwd is returned.
-/// Instances of $USER in either are replaced with the current username.
+/// Where the interface starts when no PATH was given: the cwd if it is a ceph
+/// dir, otherwise the configured default, otherwise the cwd anyway.
 fn default_dir() -> PathBuf {
     let cwd = PathBuf::from(".");
-    // The variable wins over the baked-in value because it is set closer to the
-    // machine: a site's modulefile against whoever built the binary. Set-but-empty
-    // disables the baked-in value too, so a site can also switch the default off.
-    let configured = match std::env::var("CEPHDU_DEFAULT_DIR") {
-        Ok(dir) => (!dir.is_empty()).then_some(dir),
-        Err(_) => DEFAULT_DIR.map(str::to_string),
-    };
-    let Some(dir) = configured else {
+    let var = std::env::var("CEPHDU_DEFAULT_DIR").ok();
+    let username = std::env::var("USER").ok();
+    let Some(dir) = configured_dir(var.as_deref(), DEFAULT_DIR, username.as_deref()) else {
         // Nothing to fall back to, so skip the statfs.
         return cwd;
     };
@@ -329,12 +328,59 @@ fn default_dir() -> PathBuf {
         return cwd;
     }
 
+    dir
+}
+
+/// Resolves the configured default directory, `var` being the environment
+/// variable's value if it is set at all and `baked` the build-time one. A $USER
+/// that cannot be expanded leaves no usable default.
+fn configured_dir(
+    var: Option<&str>,
+    baked: Option<&str>,
+    username: Option<&str>,
+) -> Option<PathBuf> {
+    // The variable wins over the baked-in value because it is set closer to the
+    // machine: a site's modulefile against whoever built the binary. Set-but-empty
+    // disables the baked-in value too, so a site can also switch the default off.
+    let dir = match var {
+        Some(dir) => (!dir.is_empty()).then_some(dir),
+        None => baked,
+    }?;
+
     if dir.contains("$USER") {
-        match std::env::var("USER") {
-            Ok(username) => PathBuf::from(dir.replace("$USER", &username)),
-            Err(_) => cwd,
-        }
+        Some(PathBuf::from(dir.replace("$USER", username?)))
     } else {
-        PathBuf::from(dir)
+        Some(PathBuf::from(dir))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_variable_wins_over_the_baked_in_default() {
+        let dir = |s: &str| Some(PathBuf::from(s));
+
+        assert_eq!(
+            configured_dir(Some("/var"), Some("/baked"), None),
+            dir("/var")
+        );
+        assert_eq!(configured_dir(None, Some("/baked"), None), dir("/baked"));
+        assert_eq!(configured_dir(Some(""), Some("/baked"), None), None);
+        assert_eq!(configured_dir(None, None, None), None);
+    }
+
+    #[test]
+    fn a_configured_default_expands_user() {
+        assert_eq!(
+            configured_dir(Some("/ceph/users/$USER"), None, Some("ada")),
+            Some(PathBuf::from("/ceph/users/ada"))
+        );
+        assert_eq!(
+            configured_dir(None, Some("/baked/$USER"), Some("ada")),
+            Some(PathBuf::from("/baked/ada"))
+        );
+        assert_eq!(configured_dir(Some("/ceph/users/$USER"), None, None), None);
     }
 }
